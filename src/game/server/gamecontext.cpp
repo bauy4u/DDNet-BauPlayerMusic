@@ -5451,14 +5451,14 @@ bool CGameContext::ModifyMapWithAudio(const char *pMapPath, const char *pSoundNa
       
  
 	char aLayerName[64];        
-	str_format(aLayerName, sizeof(aLayerName), "Sound_%s", pSoundName);      
+	str_format(aLayerName, sizeof(aLayerName), "%s", pSoundName);      
 	
 	// 如果字符串长度超过6个字符，截断它  
-	if(str_length(aLayerName) > 6)    
+	if(str_length(aLayerName) > 11)    
 	{      
 		char aOriginalName[64];    
 		str_copy(aOriginalName, aLayerName, sizeof(aOriginalName));  
-		aLayerName[6] = '\\0';    // 直接在第6位截断  
+		aLayerName[11] = '\\0';    // 直接在第6位截断  
 		dbg_msg("song", "Layer name truncated from '%s' to '%s'", aOriginalName, aLayerName);      
 	}      
 	
@@ -6028,7 +6028,7 @@ void CSongDownloadJob::Run()
       
     if(Success)  
     {  
-        m_pGameContext->SendChatTarget(m_ClientID, "歌曲下载请求已提交成功");  
+        m_pGameContext->SendChatTarget(m_ClientID, "歌曲已成功加载");  
     }  
     else  
     {  
@@ -6106,7 +6106,7 @@ void CGameContext::ConDownloadSong(IConsole::IResult *pResult, void *pUserData)
     auto pRequest = std::make_shared<CHttpRequest>("http://127.0.0.1:5000/download");      
     pRequest->PostJson(JsonString.c_str());      
     pRequest->WriteToMemory();      
-    pRequest->Timeout(CTimeout{5000, 15000, 500, 5});     
+    pRequest->Timeout(CTimeout{5000, 120000, 500, 5}); // 增加到120秒总超时  
         
     pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);      
         
