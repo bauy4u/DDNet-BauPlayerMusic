@@ -187,6 +187,9 @@ class CGameContext : public IGameServer
 	static void ConTuneSetZoneMsgEnter(IConsole::IResult *pResult, void *pUserData);
 	static void ConTuneSetZoneMsgLeave(IConsole::IResult *pResult, void *pUserData);
 	static void ConSong(IConsole::IResult *pResult, void *pUserData);
+	static void ConStartLyrics(IConsole::IResult *pResult, void *pUserData);  
+	static void ConStopLyrics(IConsole::IResult *pResult, void *pUserData);  
+	static void ConLoadLyrics(IConsole::IResult *pResult, void *pUserData);
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
 	static void ConSwitchOpen(IConsole::IResult *pResult, void *pUserData);
 	static void ConPause(IConsole::IResult *pResult, void *pUserData);
@@ -279,6 +282,24 @@ public:
 	std::map<int, std::vector<SongInfo>> m_PlayerSongResults;  
 	void AddToPlaylist(const SongInfo &Song);  // 添加歌曲到队列  
 	void ShowPlaylist(int ClientID);           // 显示播放队列
+	std::map<NETADDR, int64_t> m_SongCooldowns;
+	struct LyricLine {  
+		int m_Tick;        // 游戏tick时间  
+		std::string m_Text; // 歌词文本  
+	};  
+	
+	std::vector<LyricLine> m_CurrentLyrics;  
+	int m_LyricStartTick;  
+	size_t m_NextLyricIndex;  
+	bool m_LyricsActive;  
+	std::string m_CurrentSongId;
+	
+	void LoadLyrics(const std::string& songId);  
+	void CheckAndSendLyrics();  
+	void StartLyrics();  
+	void StopLyrics();  
+	void SaveLyricsState();  
+	void LoadLyricsState();  
 
 	CGameContext();
 	CGameContext(int Reset);

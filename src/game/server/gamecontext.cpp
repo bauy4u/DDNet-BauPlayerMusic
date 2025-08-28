@@ -1059,6 +1059,13 @@ void CGameContext::OnTick()
 	m_World.m_Core.m_aTuning[0] = m_Tuning;
 	m_World.Tick();
 
+      
+    // 每0.1秒检查一次歌词  
+    if(Server()->Tick() % (Server()->TickSpeed() / 10) == 0)  
+    {  
+        CheckAndSendLyrics();  
+    }  
+
 	UpdatePlayerMaps();
 
 	//if(world.paused) // make sure that the game object always updates
@@ -3309,6 +3316,7 @@ void CGameContext::ConSetTeamAll(IConsole::IResult *pResult, void *pUserData)
 void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
+	pSelf->SaveLyricsState();  
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
 		if(!pSelf->GetPlayerChar(i))
@@ -3739,6 +3747,9 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team of all players to team");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
+	Console()->Register("lyrics_start", "", CFGFLAG_SERVER, ConStartLyrics, this, "Start displaying lyrics");  
+	Console()->Register("lyrics_stop", "", CFGFLAG_SERVER, ConStopLyrics, this, "Stop displaying lyrics");  
+	Console()->Register("lyrics_load", "s[song_id]", CFGFLAG_SERVER, ConLoadLyrics, this, "Load lyrics for song");
 
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
 	Console()->Register("remove_vote", "r[name]", CFGFLAG_SERVER, ConRemoveVote, this, "remove a voting option");
@@ -4144,6 +4155,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 	m_pAntibot->RoundStart(this);
 	LoadPlaylistFromFile();  
+	LoadLyricsState();  
 }
 
 void CGameContext::CreateAllEntities(bool Initial)
@@ -5818,6 +5830,24 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
 {  
     CGameContext *pSelf = (CGameContext *)pUserData;  
     int ClientID = pResult->m_ClientId;  
+
+	const NETADDR *pAddr = pSelf->Server()->ClientAddr(ClientID);  
+	int64_t Now = pSelf->Server()->Tick();  
+	int64_t CooldownTicks = pSelf->Server()->TickSpeed() * 30; // 30秒  
+	
+	// 检查冷却时间  
+	auto it = pSelf->m_SongCooldowns.find(*pAddr);  
+	if(it != pSelf->m_SongCooldowns.end() && it->second + CooldownTicks > Now)  
+	{  
+		int SecondsLeft = (int)((it->second + CooldownTicks - Now) / pSelf->Server()->TickSpeed()) + 1;  
+		char aBuf[128];  
+		str_format(aBuf, sizeof(aBuf), "请等待 %d 秒后再使用 /song 命令", SecondsLeft);  
+		pSelf->SendChatTarget(ClientID, aBuf);  
+		return;  
+	}  
+  
+// 更新最后使用时间  
+pSelf->m_SongCooldowns[*pAddr] = Now;
       
     if(pResult->NumArguments() < 1)  
     {  
@@ -6036,7 +6066,8 @@ void CSongDownloadJob::Run()
       
 	if(Success)    
 	{    
-		m_pGameContext->SendChatTarget(m_ClientID, "歌曲下载完成");    
+		m_pGameContext->SendChatTarget(m_ClientID, "歌曲下载完成");  
+		m_pGameContext->m_CurrentSongId = m_SongId;    
 		
 		// 获取当前地图路径  
 		char aOriginMapPath[IO_MAX_PATH_LENGTH];    
@@ -6057,12 +6088,17 @@ void CSongDownloadJob::Run()
 		{  
 			// 直接调用现有的ModifyMapWithAudio函数  
 			if(m_pGameContext->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, m_SongId.c_str(), pAudioData, AudioDataSize))    
-			{  
-				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图并开始播放");  
-				// 触发地图重载  
-				m_pGameContext->Console()->ExecuteLine("hot_reload");  
-				m_pGameContext->m_LastAddedSoundId = 1;  
-			}  
+			{    
+				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图并开始播放");    
+				
+				// 加载并启动歌词显示  
+				m_pGameContext->LoadLyrics(m_SongId);  
+				m_pGameContext->StartLyrics();  
+				
+				// 触发地图重载    
+				m_pGameContext->Console()->ExecuteLine("hot_reload");    
+				m_pGameContext->m_LastAddedSoundId = 1;    
+			}   
 			else  
 			{  
 				m_pGameContext->SendChatTarget(-1, "音频嵌入失败");  
@@ -6150,7 +6186,7 @@ void CGameContext::ConDownloadSong(IConsole::IResult *pResult, void *pUserData)
     auto pRequest = std::make_shared<CHttpRequest>("http://127.0.0.1:5000/download");      
     pRequest->PostJson(JsonString.c_str());      
     pRequest->WriteToMemory();      
-    pRequest->Timeout(CTimeout{60000, 120000, 500, 5}); // 增加到120秒总超时  
+    pRequest->Timeout(CTimeout{60000, 120000, 500, 30}); // 增加到120秒总超时  
         
     pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);      
         
@@ -6308,4 +6344,209 @@ void CGameContext::SavePlaylistToFile()
       
     io_close(File);  
     dbg_msg("playlist", "Saved %d songs to playlist file", (int)m_PlaylistQueue.size());  
+}
+
+void CGameContext::LoadLyrics(const std::string& songId)    
+{    
+    m_CurrentLyrics.clear();    
+    m_NextLyricIndex = 0;    
+    m_LyricsActive = false;    
+        
+    char aLrcPath[IO_MAX_PATH_LENGTH];    
+    str_format(aLrcPath, sizeof(aLrcPath), "data/musicso/%s.lrc", songId.c_str());    
+        
+    IOHANDLE File = Storage()->OpenFile(aLrcPath, IOFLAG_READ, IStorage::TYPE_ALL);  
+    if(!File)  
+    {  
+        return; // 静默失败，很多歌可能没有歌词文件  
+    }  
+  
+    CLineReader LineReader;  
+    LineReader.OpenFile(File);  
+        
+    int ParsedCount = 0;    
+    const char *pLine;  
+        
+    while((pLine = LineReader.Get()) != nullptr)  
+    {    
+        if(pLine[0] == '[')    
+        {    
+            int Minutes = 0, Seconds = 0, Milliseconds = 0;  
+            int ScanResult = sscanf(pLine, "[%d:%d.%d]", &Minutes, &Seconds, &Milliseconds);  
+                
+            if(ScanResult >= 2)  
+            {  
+                // 如果是 .xx 格式, Milliseconds 需要乘以 10  
+                if(str_length(pLine) > 8 && pLine[8] == ']')   
+                {  
+                   Milliseconds *= 10;  
+                }  
+  
+                int TotalMilliseconds = Minutes * 60000 + Seconds * 1000 + Milliseconds;  
+                int GameTick = (int64_t)TotalMilliseconds * Server()->TickSpeed() / 1000;  
+                    
+                const char* pText = str_find(pLine, "]");    
+                if(pText)    
+                {    
+                    pText++; // 跳过 ']'    
+                        
+                    // 跳过文本前的所有空格  
+                    while(*pText == ' ')  
+                    {  
+                        pText++;  
+                    }  
+  
+                    if(str_length(pText) > 0)    
+                    {    
+                        LyricLine Line;    
+                        Line.m_Tick = GameTick;    
+                        Line.m_Text = std::string(pText);    
+                        m_CurrentLyrics.push_back(Line);    
+                        ParsedCount++;    
+                    }    
+                }    
+            }    
+        }    
+    }    
+        
+    char aBuf[256];    
+    str_format(aBuf, sizeof(aBuf), "Loaded %d lyric lines for song %s.", ParsedCount, songId.c_str());    
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);    
+}
+
+void CGameContext::SaveLyricsState()  
+{  
+    Storage()->CreateFolder("data", IStorage::TYPE_SAVE);  
+    Storage()->CreateFolder("data/musico", IStorage::TYPE_SAVE);  
+      
+    const char *pFilePath = "data/musico/lyrics_state.txt";  
+    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_WRITE, IStorage::TYPE_SAVE);  
+    if(!File)  
+    {  
+        dbg_msg("lyrics", "Failed to open lyrics state file for writing: %s", pFilePath);  
+        return;  
+    }  
+      
+    // 保存当前播放的歌曲ID和状态  
+    char aLine[256];  
+    str_format(aLine, sizeof(aLine), "%s|%s|%d\n",   
+               m_CurrentSongId.c_str(),  
+               m_LyricsActive ? "true" : "false",  
+               (int)m_NextLyricIndex);  
+      
+    io_write(File, aLine, str_length(aLine));  
+    io_close(File);  
+      
+    dbg_msg("lyrics", "Saved lyrics state to file");  
+}  
+  
+void CGameContext::LoadLyricsState()  
+{  
+    const char *pFilePath = "data/musico/lyrics_state.txt";  
+    if(!Storage()->FileExists(pFilePath, IStorage::TYPE_SAVE))  
+    {  
+        return;  
+    }  
+      
+    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_READ, IStorage::TYPE_SAVE);  
+    if(!File)  
+    {  
+        dbg_msg("lyrics", "Failed to open lyrics state file for reading: %s", pFilePath);  
+        return;  
+    }  
+      
+    CLineReader LineReader;  
+    LineReader.OpenFile(File);  
+      
+    const char *pLine = LineReader.Get();  
+    if(pLine)  
+    {  
+        char aBuffer[1024];  
+        str_copy(aBuffer, pLine, sizeof(aBuffer));  
+          
+        char *pSongId = aBuffer;  
+        char *pActive = (char *)str_find(pSongId, "|");  
+        if(!pActive)  
+            return;  
+          
+        *pActive = '\0';  
+        pActive++;  
+          
+        char *pIndex = (char *)str_find(pActive, "|");  
+        if(!pIndex)  
+            return;  
+          
+        *pIndex = '\0';  
+        pIndex++;  
+          
+        // 恢复歌词状态  
+        LoadLyrics(std::string(pSongId));  
+        if(str_comp(pActive, "true") == 0)  
+        {  
+            StartLyrics();  
+            m_NextLyricIndex = str_toint(pIndex);  
+        }  
+    }  
+      
+    dbg_msg("lyrics", "Loaded lyrics state from file");  
+}
+
+void CGameContext::CheckAndSendLyrics()  
+{  
+    // 添加调试输出  
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "CheckAndSendLyrics - Active: %s, Index: %d, Total: %d",   
+               m_LyricsActive ? "true" : "false",   
+               (int)m_NextLyricIndex,   
+               (int)m_CurrentLyrics.size());  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "lyrics_debug", aBuf);  
+      
+    if(!m_LyricsActive || m_NextLyricIndex >= m_CurrentLyrics.size())  
+        return;  
+    int CurrentTick = Server()->Tick() - m_LyricStartTick;  
+      
+    while(m_NextLyricIndex < m_CurrentLyrics.size() &&   
+          CurrentTick >= m_CurrentLyrics[m_NextLyricIndex].m_Tick)  
+    {  
+        SendBroadcast(m_CurrentLyrics[m_NextLyricIndex].m_Text.c_str(), -1, true);  
+        m_NextLyricIndex++;  
+    }  
+}  
+  
+void CGameContext::StartLyrics()  
+{  
+    if(!m_CurrentLyrics.empty())  
+    {  
+        m_LyricsActive = true;  
+        m_LyricStartTick = Server()->Tick();  
+        m_NextLyricIndex = 0;  
+        SendChatTarget(-1, "歌词显示已开始");  
+    }  
+}  
+  
+void CGameContext::StopLyrics()  
+{  
+    m_LyricsActive = false;  
+    SendChatTarget(-1, "歌词显示已停止");  
+}
+
+void CGameContext::ConStartLyrics(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    pSelf->StartLyrics();  
+}  
+  
+void CGameContext::ConStopLyrics(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    pSelf->StopLyrics();  
+}  
+  
+void CGameContext::ConLoadLyrics(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(pResult->NumArguments() >= 1)  
+    {  
+        pSelf->LoadLyrics(pResult->GetString(0));  
+    }  
 }
