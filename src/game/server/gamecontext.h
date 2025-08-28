@@ -83,17 +83,22 @@ public:
     void Run() override;  
 };
 
-class CSongDownloadJob : public IJob  
-{  
-    CGameContext *m_pGameContext;  
-    int m_ClientID;  
+class CSongDownloadJob : public IJob    
+{    
+    CGameContext *m_pGameContext;    
+    int m_ClientID;    
     std::shared_ptr<CHttpRequest> m_pRequest;  
-      
-public:  
-    CSongDownloadJob(CGameContext *pGameContext, int ClientID, std::shared_ptr<CHttpRequest> pRequest)  
-        : m_pGameContext(pGameContext), m_ClientID(ClientID), m_pRequest(pRequest) {}  
-      
-    void Run() override;  
+    std::string m_Title;    // 新增  
+    std::string m_Artist;   // 新增  
+    std::string m_SongId;   // 新增  
+        
+public:    
+    CSongDownloadJob(CGameContext *pGameContext, int ClientID, std::shared_ptr<CHttpRequest> pRequest,   
+                     const std::string &Title, const std::string &Artist, const std::string &SongId)  
+        : m_pGameContext(pGameContext), m_ClientID(ClientID), m_pRequest(pRequest),  
+          m_Title(Title), m_Artist(Artist), m_SongId(SongId) {}    
+        
+    void Run() override;    
 };
 
 struct CSnapContext
@@ -251,6 +256,8 @@ class CGameContext : public IGameServer
 		bool m_IsAfk;
 		int m_LastWhisperTo;
 	};
+	void SavePlaylistToFile();  
+    void LoadPlaylistFromFile();
 
 public:
 	IServer *Server() const { return m_pServer; }
@@ -279,7 +286,7 @@ public:
 
 	void Clear();
 
-	bool ModifyMapWithAudio(const char *pMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize);
+	bool ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize);
 	void CreateSoundLayer(CDataFileWriter &Writer, int SoundIndex, const char *pSoundName) ;
 	void AddAudioLayer(CDataFileWriter &Writer)  ;
 	void AddAudioToMap(CDataFileWriter &Writer, CDataFileReader &Reader, const char *pSoundName, void *pAudioData, unsigned AudioDataSize) ;

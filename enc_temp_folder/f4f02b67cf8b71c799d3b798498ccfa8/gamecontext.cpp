@@ -5222,10 +5222,13 @@ void CGameContext::ConSong(IConsole::IResult *pResult, void *pUserData)
     }  
       
     // 获取当前地图路径  
-	char aCurrentMapPath[IO_MAX_PATH_LENGTH];  
-	str_format(aCurrentMapPath, sizeof(aCurrentMapPath), "maps/%s.map", pSelf->Server()->GetMapName());
-      
-    if(pSelf->ModifyMapWithAudio(aCurrentMapPath, pSongName, pAudioData, AudioDataSize))  
+	char aOriginMapPath[IO_MAX_PATH_LENGTH];    
+	str_format(aOriginMapPath, sizeof(aOriginMapPath), "data/originmaps/%s.map", pSelf->Server()->GetMapName());  
+	
+	char aTargetMapPath[IO_MAX_PATH_LENGTH];    
+	str_format(aTargetMapPath, sizeof(aTargetMapPath), "maps/%s.map", pSelf->Server()->GetMapName());  
+			
+	if(pSelf->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, pSongName, pAudioData, AudioDataSize))
     {  
         char aBuf[256];  
         str_format(aBuf, sizeof(aBuf), "Successfully added audio '%s' to map", pSongName);  
@@ -5244,18 +5247,19 @@ void CGameContext::ConSong(IConsole::IResult *pResult, void *pUserData)
     free(pAudioData);  
 }
 
-bool CGameContext::ModifyMapWithAudio(const char *pMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize)  
-{  
-    dbg_msg("song", "=== Starting map modification for sound: %s ===", pSoundName);  
-    dbg_msg("song", "Map path: %s", pMapPath);  
-    dbg_msg("song", "Audio data size: %u bytes", AudioDataSize);  
-      
-    CDataFileReader Reader;  
-    if(!Reader.Open(Storage(), pMapPath, IStorage::TYPE_ALL))  
-    {  
-        dbg_msg("song", "ERROR: Failed to open map file: %s", pMapPath);  
-        return false;  
-    }  
+bool CGameContext::ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize)    
+{    
+    dbg_msg("song", "=== Starting map modification for sound: %s ===", pSoundName);    
+    dbg_msg("song", "Origin map path: %s", pOriginMapPath);    
+    dbg_msg("song", "Target map path: %s", pTargetMapPath);    
+    dbg_msg("song", "Audio data size: %u bytes", AudioDataSize);    
+        
+    CDataFileReader Reader;    
+    if(!Reader.Open(Storage(), pOriginMapPath, IStorage::TYPE_ALL))  // 从originmaps读取  
+    {    
+        dbg_msg("song", "ERROR: Failed to open origin map file: %s", pOriginMapPath);    
+        return false;    
+    }   
       
     dbg_msg("song", "Successfully opened map file");  
     dbg_msg("song", "Map contains %d items and %d data blocks", Reader.NumItems(), Reader.NumData());  
@@ -5274,8 +5278,8 @@ bool CGameContext::ModifyMapWithAudio(const char *pMapPath, const char *pSoundNa
     dbg_msg("song", "Existing groups in map: %d (starting at index %d)", GroupNum, GroupStart);  
   
 
-    char aTempPath[IO_MAX_PATH_LENGTH];  
-    str_format(aTempPath, sizeof(aTempPath), "%s.tmp", pMapPath);
+	char aTempPath[IO_MAX_PATH_LENGTH];    
+	str_format(aTempPath, sizeof(aTempPath), "%s.tmp", pTargetMapPath);  // 基于目标路径
     dbg_msg("song", "Creating temporary file: %s", aTempPath);  
       
     CDataFileWriter Writer;  
@@ -5520,22 +5524,22 @@ bool CGameContext::ModifyMapWithAudio(const char *pMapPath, const char *pSoundNa
     dbg_msg("song", "Finished writing temporary map file");  
       
 
-    dbg_msg("song", "Attempting to replace original map file...");  
-    if(!Storage()->RemoveFile(pMapPath, IStorage::TYPE_SAVE))  
-    {  
-        dbg_msg("song", "WARNING: Failed to remove original map file (this might be normal)");  
-    }  
-    else  
-    {  
-        dbg_msg("song", "Successfully removed original map file");  
-    }  
-  
-    if(!Storage()->RenameFile(aTempPath, pMapPath, IStorage::TYPE_SAVE))  
-    {  
-        dbg_msg("song", "ERROR: Failed to replace map file from %s to %s", aTempPath, pMapPath);  
-        Storage()->RemoveFile(aTempPath, IStorage::TYPE_SAVE);  
-        return false;  
-    }  
+	dbg_msg("song", "Attempting to replace target map file...");    
+	if(!Storage()->RemoveFile(pTargetMapPath, IStorage::TYPE_SAVE))    
+	{    
+		dbg_msg("song", "WARNING: Failed to remove target map file (this might be normal)");    
+	}    
+	else    
+	{    
+		dbg_msg("song", "Successfully removed target map file");    
+	}    
+	
+	if(!Storage()->RenameFile(aTempPath, pTargetMapPath, IStorage::TYPE_SAVE))    
+	{    
+		dbg_msg("song", "ERROR: Failed to replace map file from %s to %s", aTempPath, pTargetMapPath);    
+		Storage()->RemoveFile(aTempPath, IStorage::TYPE_SAVE);    
+		return false;    
+	}
       
     dbg_msg("song", "Successfully replaced map file");  
     dbg_msg("song", "=== Map modification completed successfully ===");  
@@ -5830,7 +5834,7 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
     // 创建HTTP请求  
     auto pRequest = std::make_shared<CHttpRequest>(aUrl);  
     pRequest->WriteToMemory();  
-    pRequest->Timeout(CTimeout{5000, 10000, 500, 5});  
+    pRequest->Timeout(CTimeout{10000, 15000, 500, 15});  
       
     // 在主线程中启动HTTP请求  
     pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);  
@@ -6026,10 +6030,46 @@ void CSongDownloadJob::Run()
         }  
     }  
       
-    if(Success)  
-    {  
-        m_pGameContext->SendChatTarget(m_ClientID, "歌曲已成功加载");  
-    }  
+	if(Success)    
+	{    
+		m_pGameContext->SendChatTarget(m_ClientID, "歌曲下载完成");    
+		
+		// 获取当前地图路径  
+		char aOriginMapPath[IO_MAX_PATH_LENGTH];    
+		str_format(aOriginMapPath, sizeof(aOriginMapPath), "data/originmaps/%s.map",     
+				m_pGameContext->Server()->GetMapName());    
+		
+		char aTargetMapPath[IO_MAX_PATH_LENGTH];    
+		str_format(aTargetMapPath, sizeof(aTargetMapPath), "maps/%s.map",     
+				m_pGameContext->Server()->GetMapName());   
+		
+		// 读取音频文件（使用song_id作为文件名）  
+		char aFilePath[IO_MAX_PATH_LENGTH];  
+		str_format(aFilePath, sizeof(aFilePath), "data/musicso/%s.opus", m_SongId.c_str());  
+		
+		void *pAudioData;  
+		unsigned AudioDataSize;  
+		if(m_pGameContext->Storage()->ReadFile(aFilePath, IStorage::TYPE_ALL, &pAudioData, &AudioDataSize))  
+		{  
+			// 直接调用现有的ModifyMapWithAudio函数  
+			if(m_pGameContext->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, m_SongId.c_str(), pAudioData, AudioDataSize))    
+			{  
+				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图并开始播放");  
+				// 触发地图重载  
+				m_pGameContext->Console()->ExecuteLine("hot_reload");  
+				m_pGameContext->m_LastAddedSoundId = 1;  
+			}  
+			else  
+			{  
+				m_pGameContext->SendChatTarget(-1, "音频嵌入失败");  
+			}  
+			free(pAudioData);  
+		}  
+		else  
+		{  
+			m_pGameContext->SendChatTarget(-1, "无法读取下载的音频文件");  
+		}  
+	} 
     else  
     {  
         m_pGameContext->SendChatTarget(m_ClientID, "歌曲下载请求处理失败");  
@@ -6106,11 +6146,11 @@ void CGameContext::ConDownloadSong(IConsole::IResult *pResult, void *pUserData)
     auto pRequest = std::make_shared<CHttpRequest>("http://127.0.0.1:5000/download");      
     pRequest->PostJson(JsonString.c_str());      
     pRequest->WriteToMemory();      
-    pRequest->Timeout(CTimeout{5000, 120000, 500, 5}); // 增加到120秒总超时  
+    pRequest->Timeout(CTimeout{60000, 120000, 500, 5}); // 增加到120秒总超时  
         
     pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);      
         
-    auto pJob = std::make_shared<CSongDownloadJob>(pSelf, -1, pRequest);    
+    auto pJob = std::make_shared<CSongDownloadJob>(pSelf, -1, pRequest, Song.title, Song.artist, Song.page_url);
     pSelf->Engine()->AddJob(pJob);    
       
     pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "HTTP request and job created successfully");  
@@ -6167,4 +6207,38 @@ void CGameContext::ConChatMls(IConsole::IResult *pResult, void *pUserData)
     int ClientID = pResult->m_ClientId;  
       
     pSelf->ShowPlaylist(ClientID);  
+}
+
+void CGameContext::SavePlaylistToFile()  
+{  
+    // 确保目录存在  
+    Storage()->CreateFolder("data", IStorage::TYPE_SAVE);  
+    Storage()->CreateFolder("data/musico", IStorage::TYPE_SAVE);  
+      
+    const char *pFilePath = "data/musico/playlist.txt";  
+    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_WRITE, IStorage::TYPE_SAVE);  
+    if(!File)  
+    {  
+        dbg_msg("playlist", "Failed to open playlist file for writing: %s", pFilePath);  
+        return;  
+    }  
+      
+    // 创建队列副本来遍历  
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
+      
+    while(!TempQueue.empty())  
+    {  
+        const SongInfo &Song = TempQueue.front();  
+          
+        // 写入格式：title|artist|page_url  
+        char aLine[1024];  
+        str_format(aLine, sizeof(aLine), "%s|%s|%s\\n",   
+                   Song.title.c_str(), Song.artist.c_str(), Song.page_url.c_str());  
+          
+        io_write(File, aLine, str_length(aLine));  
+        TempQueue.pop();  
+    }  
+      
+    io_close(File);  
+    dbg_msg("playlist", "Saved %d songs to playlist file", (int)m_PlaylistQueue.size());  
 }
