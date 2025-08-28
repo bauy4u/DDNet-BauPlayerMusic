@@ -2770,6 +2770,7 @@ if(SERVER)
     gameworld.cpp
     gameworld.h
     mutes.cpp
+    songcooldowns.cpp
     player.cpp
     player.h
     save.cpp

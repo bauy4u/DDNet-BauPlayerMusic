@@ -182,6 +182,8 @@ void CGameContext::Clear()
 	CTuningParams Tuning = m_Tuning;
 	CMutes Mutes = m_Mutes;
 	CMutes VoteMutes = m_VoteMutes;
+	CSongCooldowns SongCooldowns = m_SongCooldowns; 
+	int64_t LastSongChangeTime = m_LastSongChangeTime;
 
 	m_Resetting = true;
 	this->~CGameContext();
@@ -194,6 +196,8 @@ void CGameContext::Clear()
 	m_Tuning = Tuning;
 	m_Mutes = Mutes;
 	m_VoteMutes = VoteMutes;
+	m_SongCooldowns = SongCooldowns;
+	m_LastSongChangeTime = LastSongChangeTime;
 }
 
 void CGameContext::TeeHistorianWrite(const void *pData, int DataSize, void *pUser)
@@ -1279,6 +1283,7 @@ void CGameContext::OnTick()
 	{
 		m_Mutes.UnmuteExpired();
 		m_VoteMutes.UnmuteExpired();
+		m_SongCooldowns.CleanupExpired(); 
 	}
 
 	if(Server()->Tick() % (g_Config.m_SvAnnouncementInterval * Server()->TickSpeed() * 60) == 0)
@@ -5826,58 +5831,70 @@ void CGameContext::CreateMapSound(int Sound, int Target)
     }
 }
 
-void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)  
-{  
-    CGameContext *pSelf = (CGameContext *)pUserData;  
-    int ClientID = pResult->m_ClientId;  
-
-	const NETADDR *pAddr = pSelf->Server()->ClientAddr(ClientID);  
-	int64_t Now = pSelf->Server()->Tick();  
-	int64_t CooldownTicks = pSelf->Server()->TickSpeed() * 30; // 30秒  
-	
-	// 检查冷却时间  
-	auto it = pSelf->m_SongCooldowns.find(*pAddr);  
-	if(it != pSelf->m_SongCooldowns.end() && it->second + CooldownTicks > Now)  
-	{  
-		int SecondsLeft = (int)((it->second + CooldownTicks - Now) / pSelf->Server()->TickSpeed()) + 1;  
-		char aBuf[128];  
-		str_format(aBuf, sizeof(aBuf), "请等待 %d 秒后再使用 /song 命令", SecondsLeft);  
-		pSelf->SendChatTarget(ClientID, aBuf);  
-		return;  
-	}  
-  
-// 更新最后使用时间  
-pSelf->m_SongCooldowns[*pAddr] = Now;
+void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)    
+{    
+    CGameContext *pSelf = (CGameContext *)pUserData;    
+    int ClientID = pResult->m_ClientId;    
       
-    if(pResult->NumArguments() < 1)  
+    // 获取客户端IP地址  
+    const NETADDR *pAddr = pSelf->Server()->ClientAddr(ClientID);  
+      
+    // 检查全局冷却（30秒）  
+    int64_t Now = time_timestamp();  
+    if(pSelf->m_LastSongChangeTime > 0 && Now - pSelf->m_LastSongChangeTime < 30)  
     {  
-        pSelf->SendChatTarget(ClientID, "用法: /song <歌名>");  
+        int SecondsLeft = 30 - (int)(Now - pSelf->m_LastSongChangeTime);  
+        char aBuf[128];  
+        str_format(aBuf, sizeof(aBuf), "切歌后需等待 %d 秒才能搜索新歌曲", SecondsLeft);  
+        pSelf->SendChatTarget(ClientID, aBuf);  
         return;  
     }  
       
-    const char *pSongName = pResult->GetString(0);  
+    // 检查个人冷却（60秒）  
+    if(pSelf->m_SongCooldowns.IsCooldown(pAddr))  
+    {  
+        int SecondsLeft = pSelf->m_SongCooldowns.GetSecondsLeft(pAddr);  
+        char aBuf[128];  
+        str_format(aBuf, sizeof(aBuf), "请等待 %d 秒后再使用 /song 命令", SecondsLeft);  
+        pSelf->SendChatTarget(ClientID, aBuf);  
+        return;  
+    }  
       
-    // URL编码歌名  
-    char aEscapedName[256];  
-    EscapeUrl(aEscapedName, sizeof(aEscapedName), pSongName);  
+    // 设置60秒个人冷却  
+    pSelf->m_SongCooldowns.SetCooldown(pAddr, 60);   
       
-    // 构造完整的URL  
-    char aUrl[512];  
-    str_format(aUrl, sizeof(aUrl), "http://127.0.0.1:5000/search?name=%s", aEscapedName);  
+
+        
+    if(pResult->NumArguments() < 1)    
+    {    
+        pSelf->SendChatTarget(ClientID, "用法: /song <歌名>");    
+        return;    
+    }    
       
-    // 创建HTTP请求  
-    auto pRequest = std::make_shared<CHttpRequest>(aUrl);  
-    pRequest->WriteToMemory();  
-    pRequest->Timeout(CTimeout{10000, 15000, 500, 15});  
-      
-    // 在主线程中启动HTTP请求  
-    pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);  
-      
-    // 创建作业来处理响应  
-    auto pJob = std::make_shared<CSongSearchJob>(pSelf, ClientID, pRequest);  
-    pSelf->Engine()->AddJob(pJob);  
-      
-    pSelf->SendChatTarget(ClientID, "正在搜索歌曲...");  
+    // 原有的搜索逻辑...  
+    const char *pSongName = pResult->GetString(0);    
+        
+    // URL编码歌名    
+    char aEscapedName[256];    
+    EscapeUrl(aEscapedName, sizeof(aEscapedName), pSongName);    
+        
+    // 构造完整的URL    
+    char aUrl[512];    
+    str_format(aUrl, sizeof(aUrl), "http://127.0.0.1:5000/search?name=%s", aEscapedName);    
+        
+    // 创建HTTP请求    
+    auto pRequest = std::make_shared<CHttpRequest>(aUrl);    
+    pRequest->WriteToMemory();    
+    pRequest->Timeout(CTimeout{5000, 10000, 500, 20});    
+        
+    // 在主线程中启动HTTP请求    
+    pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);    
+        
+    // 创建作业来处理响应    
+    auto pJob = std::make_shared<CSongSearchJob>(pSelf, ClientID, pRequest);    
+    pSelf->Engine()->AddJob(pJob);    
+        
+    pSelf->SendChatTarget(ClientID, "正在搜索歌曲...");    
 }
   
 void CGameContext::ConChatChoose(IConsole::IResult *pResult, void *pUserData)    
@@ -6095,9 +6112,11 @@ void CSongDownloadJob::Run()
 				m_pGameContext->LoadLyrics(m_SongId);  
 				m_pGameContext->StartLyrics();  
 				
+				
 				// 触发地图重载    
 				m_pGameContext->Console()->ExecuteLine("hot_reload");    
-				m_pGameContext->m_LastAddedSoundId = 1;    
+				m_pGameContext->m_LastAddedSoundId = 1;   
+				m_pGameContext->m_LastSongChangeTime = time_timestamp();   
 			}   
 			else  
 			{  
@@ -6494,12 +6513,7 @@ void CGameContext::LoadLyricsState()
 void CGameContext::CheckAndSendLyrics()  
 {  
     // 添加调试输出  
-    char aBuf[256];  
-    str_format(aBuf, sizeof(aBuf), "CheckAndSendLyrics - Active: %s, Index: %d, Total: %d",   
-               m_LyricsActive ? "true" : "false",   
-               (int)m_NextLyricIndex,   
-               (int)m_CurrentLyrics.size());  
-    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "lyrics_debug", aBuf);  
+
       
     if(!m_LyricsActive || m_NextLyricIndex >= m_CurrentLyrics.size())  
         return;  
@@ -6550,3 +6564,4 @@ void CGameContext::ConLoadLyrics(IConsole::IResult *pResult, void *pUserData)
         pSelf->LoadLyrics(pResult->GetString(0));  
     }  
 }
+

@@ -146,6 +146,29 @@ private:
 	std::map<NETADDR, CMute> m_Mutes;
 };
 
+class CSongCooldown  
+{  
+public:  
+    int64_t m_Expire;  
+    bool m_Initialized = false;  
+      
+    int SecondsLeft() const;  
+};  
+  
+class CSongCooldowns  
+{  
+public:  
+    CSongCooldowns();  
+      
+    bool SetCooldown(const NETADDR *pAddr, int Seconds);  
+    bool IsCooldown(const NETADDR *pAddr) const;  
+    int GetSecondsLeft(const NETADDR *pAddr) const;  
+    void CleanupExpired();  
+      
+private:  
+    std::map<NETADDR, CSongCooldown> m_Cooldowns;  
+};
+
 class CGameContext : public IGameServer
 {
 	IServer *m_pServer;
@@ -282,17 +305,18 @@ public:
 	std::map<int, std::vector<SongInfo>> m_PlayerSongResults;  
 	void AddToPlaylist(const SongInfo &Song);  // 添加歌曲到队列  
 	void ShowPlaylist(int ClientID);           // 显示播放队列
-	std::map<NETADDR, int64_t> m_SongCooldowns;
 	struct LyricLine {  
 		int m_Tick;        // 游戏tick时间  
 		std::string m_Text; // 歌词文本  
 	};  
+	
 	
 	std::vector<LyricLine> m_CurrentLyrics;  
 	int m_LyricStartTick;  
 	size_t m_NextLyricIndex;  
 	bool m_LyricsActive;  
 	std::string m_CurrentSongId;
+	int64_t m_LastSongChangeTime; 
 	
 	void LoadLyrics(const std::string& songId);  
 	void CheckAndSendLyrics();  
@@ -672,6 +696,8 @@ private:
 
 	CMutes m_Mutes;
 	CMutes m_VoteMutes;
+	// 最后一次切歌的时间戳
+	CSongCooldowns m_SongCooldowns;
 	void MuteWithMessage(const NETADDR *pAddr, int Seconds, const char *pReason, const char *pDisplayName);
 	void VoteMuteWithMessage(const NETADDR *pAddr, int Seconds, const char *pReason, const char *pDisplayName);
 
