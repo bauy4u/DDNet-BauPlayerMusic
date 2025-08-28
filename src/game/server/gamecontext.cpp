@@ -4141,7 +4141,9 @@ void CGameContext::OnInit(const void *pPersistentData)
 	// create all entities from the game layer
 	CreateAllEntities(true);
 
+
 	m_pAntibot->RoundStart(this);
+	LoadPlaylistFromFile();  
 }
 
 void CGameContext::CreateAllEntities(bool Initial)
@@ -4416,6 +4418,8 @@ void CGameContext::OnShutdown(void *pPersistentData)
 		}
 		aio_free(m_pTeeHistorianFile);
 	}
+
+	SavePlaylistToFile();  
 
 	// Stop any demos being recorded.
 	Server()->StopDemos();
@@ -6209,6 +6213,68 @@ void CGameContext::ConChatMls(IConsole::IResult *pResult, void *pUserData)
     pSelf->ShowPlaylist(ClientID);  
 }
 
+void CGameContext::LoadPlaylistFromFile()
+{
+	const char *pFilePath = "data/musico/playlist.txt";
+
+	// 清空当前队列
+	while(!m_PlaylistQueue.empty())
+		m_PlaylistQueue.pop();
+
+	if(!Storage()->FileExists(pFilePath, IStorage::TYPE_SAVE))
+	{
+		dbg_msg("playlist", "Playlist file does not exist: %s", pFilePath);
+		return;
+	}
+
+	IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_READ, IStorage::TYPE_SAVE);
+	if(!File)
+	{
+		dbg_msg("playlist", "Failed to open playlist file for reading: %s", pFilePath);
+		return;
+	}
+
+	CLineReader LineReader;
+	LineReader.OpenFile(File); // 在 DDNet/Teeworlds 中，OpenFile 不返回 bool
+
+	int LoadedCount = 0;
+	const char *pLine;
+
+	while((pLine = LineReader.Get()) != nullptr)
+	{
+		char aBuffer[1024];
+		str_copy(aBuffer, pLine, sizeof(aBuffer));
+
+		char *pTitle = aBuffer;
+		char *pArtist = (char *)str_find(pTitle, "|");
+		if(!pArtist)
+			continue;
+
+        // [!! 修正 !!] 使用 \0 来表示真正的空终止符
+		*pArtist = '\0';
+		pArtist++;
+
+		char *pUrl = (char *)str_find(pArtist, "|");
+		if(!pUrl)
+			continue;
+        
+        // [!! 修正 !!] 使用 \0 来表示真正的空终止符
+		*pUrl = '\0';
+		pUrl++;
+
+		SongInfo Song;
+		Song.title = pTitle;
+		Song.artist = pArtist;
+		Song.page_url = pUrl;
+
+		m_PlaylistQueue.push(Song);
+		LoadedCount++;
+	}
+
+	io_close(File); // [!! 补充 !!] 读取完毕后也应该关闭文件句柄
+	dbg_msg("playlist", "Loaded %d songs from playlist file", LoadedCount);
+}
+
 void CGameContext::SavePlaylistToFile()  
 {  
     // 确保目录存在  
@@ -6232,7 +6298,8 @@ void CGameContext::SavePlaylistToFile()
           
         // 写入格式：title|artist|page_url  
         char aLine[1024];  
-        str_format(aLine, sizeof(aLine), "%s|%s|%s\\n",   
+        // [!! 修正 !!] 使用 \n 来表示真正的换行符
+        str_format(aLine, sizeof(aLine), "%s|%s|%s\n",   
                    Song.title.c_str(), Song.artist.c_str(), Song.page_url.c_str());  
           
         io_write(File, aLine, str_length(aLine));  
