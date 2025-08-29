@@ -5581,6 +5581,9 @@ bool CGameContext::ModifyMapWithAudio(const char *pOriginMapPath, const char *pT
 					}  
 					io_close(DstFile);  
 					dbg_msg("song", "Successfully created webmap file: %s", aWebMapPath);  
+					
+					// 发送上传请求到Python后端  
+					RequestUploadToObjectStorage(Server()->GetMapName(), aSha256);  
 				}  
 				else  
 				{  
@@ -5886,9 +5889,9 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
       
     // 检查全局冷却（30秒）  
     int64_t Now = time_timestamp();  
-    if(pSelf->m_LastSongChangeTime > 0 && Now - pSelf->m_LastSongChangeTime < 30)  
+    if(pSelf->m_LastSongChangeTime > 0 && Now - pSelf->m_LastSongChangeTime < 60)  
     {  
-        int SecondsLeft = 30 - (int)(Now - pSelf->m_LastSongChangeTime);  
+        int SecondsLeft = 60 - (int)(Now - pSelf->m_LastSongChangeTime);  
         char aBuf[128];  
         str_format(aBuf, sizeof(aBuf), "切歌后需等待 %d 秒才能搜索新歌曲", SecondsLeft);  
         pSelf->SendChatTarget(ClientID, aBuf);  
@@ -6151,20 +6154,16 @@ void CSongDownloadJob::Run()
 			// 直接调用现有的ModifyMapWithAudio函数  
 			if(m_pGameContext->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, m_SongId.c_str(), pAudioData, AudioDataSize, true))      
 			{      
-				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图，正在生成客户端下载文件...");      
+				m_pGameContext->SendChatTarget(-1, "歌曲已嵌入到地图，正在上传到对象存储。");      
 				
-				// 加载并启动歌词显示    
+				// 加载歌词但不重载，等待上传完成  
 				m_pGameContext->LoadLyrics(m_SongId);    
 				m_pGameContext->StartLyrics();    
 				
-				// 延迟重载，确保webmaps文件生成完成  
-				m_pGameContext->SendChatTarget(-1, "地图文件生成完成，正在重载...");  
-				
-				// 触发地图重载      
-				m_pGameContext->Console()->ExecuteLine("hot_reload");      
+				// 重载逻辑移到上传完成回调中  
 				m_pGameContext->m_LastAddedSoundId = 1;     
 				m_pGameContext->m_LastSongChangeTime = time_timestamp();     
-			} 
+			}
 			else  
 			{  
 				m_pGameContext->SendChatTarget(-1, "音频嵌入失败");  
@@ -6612,3 +6611,62 @@ void CGameContext::ConLoadLyrics(IConsole::IResult *pResult, void *pUserData)
     }  
 }
 
+void CGameContext::RequestUploadToObjectStorage(const char *pMapName, const char *pSha256)  
+{  
+    // 构造请求URL  
+    char aUrl[512];  
+    str_format(aUrl, sizeof(aUrl), "http://127.0.0.1:5000/upload_map");  
+      
+    // 构造JSON请求体  
+    char aJsonBody[256];  
+    str_format(aJsonBody, sizeof(aJsonBody),   
+               "{\"map_name\":\"%s\",\"hash\":\"%s\"}",   
+               pMapName, pSha256);  
+      
+    dbg_msg("song", "Sending upload request: %s", aJsonBody);  
+      
+    // 创建HTTP POST请求  
+    auto pRequest = std::make_shared<CHttpRequest>(aUrl);  
+    pRequest->WriteToMemory();  
+    pRequest->PostJson(aJsonBody);  
+    pRequest->Timeout(CTimeout{30000, 60000, 500, 30}); // 30秒超时  
+    // 启动HTTP请求  
+    Kernel()->RequestInterface<IHttp>()->Run(pRequest);  
+      
+    // 创建作业来处理响应  
+    auto pJob = std::make_shared<CMapUploadJob>(this, pRequest);  
+    Engine()->AddJob(pJob);  
+}
+
+CMapUploadJob::CMapUploadJob(CGameContext *pGameContext, std::shared_ptr<CHttpRequest> pRequest) :  
+    m_pGameContext(pGameContext), m_pRequest(pRequest) {}  
+  
+void CMapUploadJob::Run()
+{
+	m_pRequest->Wait();
+
+	if(m_pRequest->State() == EHttpState::DONE)
+	{
+		// 正确的方式获取响应数据
+		unsigned char *pResult;
+		size_t ResultLength;
+		m_pRequest->Result(&pResult, &ResultLength);
+
+		if(pResult && str_find((const char *)pResult, "\"success\":true"))
+		{
+			// 上传成功，触发重载
+			m_pGameContext->SendChatTarget(-1, "地图文件上传完成，正在重载...");
+			m_pGameContext->Console()->ExecuteLine("hot_reload");
+		}
+		else
+		{
+			m_pGameContext->SendChatTarget(-1, "地图文件上传失败，使用本地版本重载...");
+			m_pGameContext->Console()->ExecuteLine("hot_reload");
+		}
+	}
+	else
+	{
+		m_pGameContext->SendChatTarget(-1, "上传请求失败，使用本地版本重载...");
+		m_pGameContext->Console()->ExecuteLine("hot_reload");
+	}
+}

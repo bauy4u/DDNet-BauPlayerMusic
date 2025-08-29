@@ -101,6 +101,16 @@ public:
     void Run() override;    
 };
 
+class CMapUploadJob : public IJob  
+{  
+    CGameContext *m_pGameContext;  
+    std::shared_ptr<CHttpRequest> m_pRequest;  
+      
+public:  
+    CMapUploadJob(CGameContext *pGameContext, std::shared_ptr<CHttpRequest> pRequest);  
+    void Run() override;  
+};
+
 struct CSnapContext
 {
 	CSnapContext(int Version, bool Sixup, int ClientId) :
@@ -332,6 +342,7 @@ public:
 	void Clear();
 
 	bool ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize, bool bGenerateWebMap = true);
+	void RequestUploadToObjectStorage(const char *pMapName, const char *pSha256);
 	void CreateSoundLayer(CDataFileWriter &Writer, int SoundIndex, const char *pSoundName) ;
 	void AddAudioLayer(CDataFileWriter &Writer)  ;
 	void AddAudioToMap(CDataFileWriter &Writer, CDataFileReader &Reader, const char *pSoundName, void *pAudioData, unsigned AudioDataSize) ;

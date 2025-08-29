@@ -12,7 +12,7 @@
 #include <game/version.h>
 
 #define GAME_TYPE_NAME "DDraceNetwork"
-#define TEST_TYPE_NAME "TestDDraceNetwork"
+#define TEST_TYPE_NAME "SPlayer DM"
 
 CGameControllerDDRace::CGameControllerDDRace(class CGameContext *pGameServer) :
 	IGameController(pGameServer)
