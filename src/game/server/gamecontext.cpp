@@ -20,6 +20,8 @@
 #include <engine/shared/memheap.h>
 #include <engine/shared/protocolglue.h>
 #include <engine/storage.h>
+#include <base/hash.h>  
+#include <base/hash_ctxt.h>
 
 #include <string>
 #include <sstream> 
@@ -5249,7 +5251,7 @@ void CGameContext::ConSong(IConsole::IResult *pResult, void *pUserData)
 	char aTargetMapPath[IO_MAX_PATH_LENGTH];    
 	str_format(aTargetMapPath, sizeof(aTargetMapPath), "maps/%s.map", pSelf->Server()->GetMapName());  
 			
-	if(pSelf->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, pSongName, pAudioData, AudioDataSize))
+	if(pSelf->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, pSongName, pAudioData, AudioDataSize, true))
     {  
         char aBuf[256];  
         str_format(aBuf, sizeof(aBuf), "Successfully added audio '%s' to map", pSongName);  
@@ -5268,7 +5270,7 @@ void CGameContext::ConSong(IConsole::IResult *pResult, void *pUserData)
     free(pAudioData);  
 }
 
-bool CGameContext::ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize)    
+bool CGameContext::ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize, bool bGenerateWebMap)  
 {    
     dbg_msg("song", "=== Starting map modification for sound: %s ===", pSoundName);    
     dbg_msg("song", "Origin map path: %s", pOriginMapPath);    
@@ -5545,26 +5547,69 @@ bool CGameContext::ModifyMapWithAudio(const char *pOriginMapPath, const char *pT
     dbg_msg("song", "Finished writing temporary map file");  
       
 
-	dbg_msg("song", "Attempting to replace target map file...");    
-	if(!Storage()->RemoveFile(pTargetMapPath, IStorage::TYPE_SAVE))    
-	{    
-		dbg_msg("song", "WARNING: Failed to remove target map file (this might be normal)");    
-	}    
-	else    
-	{    
-		dbg_msg("song", "Successfully removed target map file");    
-	}    
+	if(bGenerateWebMap)  
+	{  
+		// 计算修改后地图的哈希值  
+		void *pMapData;  
+		unsigned MapDataSize;  
+		if(Storage()->ReadFile(aTempPath, IStorage::TYPE_SAVE, &pMapData, &MapDataSize))  
+		{  
+			SHA256_DIGEST MapSha256 = sha256(pMapData, MapDataSize);  
+			char aSha256[SHA256_MAXSTRSIZE];  
+			sha256_str(MapSha256, aSha256, sizeof(aSha256));  
+			
+			// 生成webmaps文件名  
+			char aWebMapPath[IO_MAX_PATH_LENGTH];  
+			str_format(aWebMapPath, sizeof(aWebMapPath), "data/webmaps/%s_%s.map",   
+					Server()->GetMapName(), aSha256);  
+			
+			// 确保webmaps目录存在  
+			Storage()->CreateFolder("data/webmaps", IStorage::TYPE_SAVE);  
+			
+			// 手动复制文件到webmaps目录  
+			IOHANDLE SrcFile = Storage()->OpenFile(aTempPath, IOFLAG_READ, IStorage::TYPE_SAVE);  
+			if(SrcFile)  
+			{  
+				IOHANDLE DstFile = Storage()->OpenFile(aWebMapPath, IOFLAG_WRITE, IStorage::TYPE_SAVE);  
+				if(DstFile)  
+				{  
+					char aBuffer[4096];  
+					int BytesRead;  
+					while((BytesRead = io_read(SrcFile, aBuffer, sizeof(aBuffer))) > 0)  
+					{  
+						io_write(DstFile, aBuffer, BytesRead);  
+					}  
+					io_close(DstFile);  
+					dbg_msg("song", "Successfully created webmap file: %s", aWebMapPath);  
+				}  
+				else  
+				{  
+					dbg_msg("song", "Failed to create webmap file: %s", aWebMapPath);  
+				}  
+				io_close(SrcFile);  
+			}  
+			
+			free(pMapData);  
+		}  
+	}  
 	
-	if(!Storage()->RenameFile(aTempPath, pTargetMapPath, IStorage::TYPE_SAVE))    
-	{    
-		dbg_msg("song", "ERROR: Failed to replace map file from %s to %s", aTempPath, pTargetMapPath);    
-		Storage()->RemoveFile(aTempPath, IStorage::TYPE_SAVE);    
-		return false;    
-	}
-      
-    dbg_msg("song", "Successfully replaced map file");  
-    dbg_msg("song", "=== Map modification completed successfully ===");  
-    return true;  
+	// 替换原始地图文件  
+	dbg_msg("song", "Attempting to replace target map file...");      
+	if(!Storage()->RemoveFile(pTargetMapPath, IStorage::TYPE_SAVE))      
+	{      
+		dbg_msg("song", "WARNING: Failed to remove target map file (this might be normal)");      
+	}      
+	
+	if(!Storage()->RenameFile(aTempPath, pTargetMapPath, IStorage::TYPE_SAVE))      
+	{      
+		dbg_msg("song", "ERROR: Failed to replace map file from %s to %s", aTempPath, pTargetMapPath);      
+		Storage()->RemoveFile(aTempPath, IStorage::TYPE_SAVE);      
+		return false;      
+	}  
+	
+	dbg_msg("song", "Successfully replaced map file");    
+	dbg_msg("song", "=== Map modification completed successfully ===");    
+	return true;
 }
 
 void CGameContext::CopyExistingMapData(CDataFileReader &Reader, CDataFileWriter &Writer)
@@ -6104,20 +6149,22 @@ void CSongDownloadJob::Run()
 		if(m_pGameContext->Storage()->ReadFile(aFilePath, IStorage::TYPE_ALL, &pAudioData, &AudioDataSize))  
 		{  
 			// 直接调用现有的ModifyMapWithAudio函数  
-			if(m_pGameContext->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, m_SongId.c_str(), pAudioData, AudioDataSize))    
-			{    
-				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图并开始播放");    
+			if(m_pGameContext->ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, m_SongId.c_str(), pAudioData, AudioDataSize, true))      
+			{      
+				m_pGameContext->SendChatTarget(-1, "歌曲已自动添加到地图，正在生成客户端下载文件...");      
 				
-				// 加载并启动歌词显示  
-				m_pGameContext->LoadLyrics(m_SongId);  
-				m_pGameContext->StartLyrics();  
+				// 加载并启动歌词显示    
+				m_pGameContext->LoadLyrics(m_SongId);    
+				m_pGameContext->StartLyrics();    
 				
+				// 延迟重载，确保webmaps文件生成完成  
+				m_pGameContext->SendChatTarget(-1, "地图文件生成完成，正在重载...");  
 				
-				// 触发地图重载    
-				m_pGameContext->Console()->ExecuteLine("hot_reload");    
-				m_pGameContext->m_LastAddedSoundId = 1;   
-				m_pGameContext->m_LastSongChangeTime = time_timestamp();   
-			}   
+				// 触发地图重载      
+				m_pGameContext->Console()->ExecuteLine("hot_reload");      
+				m_pGameContext->m_LastAddedSoundId = 1;     
+				m_pGameContext->m_LastSongChangeTime = time_timestamp();     
+			} 
 			else  
 			{  
 				m_pGameContext->SendChatTarget(-1, "音频嵌入失败");  

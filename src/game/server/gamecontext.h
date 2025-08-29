@@ -331,7 +331,7 @@ public:
 
 	void Clear();
 
-	bool ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize);
+	bool ModifyMapWithAudio(const char *pOriginMapPath, const char *pTargetMapPath, const char *pSoundName, void *pAudioData, unsigned AudioDataSize, bool bGenerateWebMap = true);
 	void CreateSoundLayer(CDataFileWriter &Writer, int SoundIndex, const char *pSoundName) ;
 	void AddAudioLayer(CDataFileWriter &Writer)  ;
 	void AddAudioToMap(CDataFileWriter &Writer, CDataFileReader &Reader, const char *pSoundName, void *pAudioData, unsigned AudioDataSize) ;
