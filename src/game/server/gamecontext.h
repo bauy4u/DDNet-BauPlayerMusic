@@ -276,6 +276,11 @@ class CGameContext : public IGameServer
 	static void ConDownloadSong(IConsole::IResult *pResult, void *pUserData);  // 投票通过后下载歌曲  
 	static void ConChatSkip(IConsole::IResult *pResult, void *pUserData); // 新增  
 	static void ConChatMls(IConsole::IResult *pResult, void *pUserData);       // 显示播放列表  
+	static void ConBadmintonBall(IConsole::IResult *pResult, void *pUserData);  
+	static void ConBadmintonRed(IConsole::IResult *pResult, void *pUserData);  
+	static void ConBadmintonBlue(IConsole::IResult *pResult, void *pUserData);  
+	static void ConBadmintonStart(IConsole::IResult *pResult, void *pUserData);
+	static void ConBadmintonStatus(IConsole::IResult *pResult, void *pUserData);
 
 	void Construct(int Resetting);
 	void Destruct(int Resetting);

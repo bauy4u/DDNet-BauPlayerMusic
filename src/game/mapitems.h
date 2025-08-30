@@ -107,6 +107,12 @@ enum
 	TILE_THROUGH_CUT,
 	TILE_THROUGH,
 	TILE_JUMP,
+	TILE_BADMINTON_ENABLE = 172,   // 进入羽毛球区域  
+	TILE_BADMINTON_DISABLE = 173,  // 离开羽毛球区域  
+	TILE_RED_IN = 174,             // 红队得分触发区域（贴地面）  
+	TILE_RED_OUT = 170,            // 红队得分重置区域（在IN上方）  
+	TILE_BLUE_IN = 175,            // 蓝队得分触发区域（贴地面）  
+	TILE_BLUE_OUT = 171,           // 蓝队得分重置区域（在IN上方）
 	TILE_FREEZE = 9,
 	TILE_TELEINEVIL,
 	TILE_UNFREEZE,

@@ -145,6 +145,16 @@ void CPlayer::Reset()
 	m_SwapTargetsClientId = -1;
 	m_BirthdayAnnounced = false;
 	m_RescueMode = RESCUEMODE_AUTO;
+	m_InBadmintonZone = false;  
+	m_BadmintonRole = ROLE_NONE;
+	m_BadmintonGameScore = 0;  
+	m_BadmintonRedScore = 0;  
+	m_BadmintonBlueScore = 0;  
+	m_BadmintonGameActive = false;
+	m_BadmintonLastScoreTick = 0;
+	m_BadmintonLastBroadcastTick = 0;
+	m_BadmintonRedScoreValid = true;  
+	m_BadmintonBlueScoreValid = true;
 
 	m_CameraInfo.Reset();
 }

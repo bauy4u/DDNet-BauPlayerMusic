@@ -3922,6 +3922,11 @@ void CGameContext::RegisterChatCommands()
     Console()->Register("choose", "i[number]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConChatChoose, this, "选择歌曲下载");
 	Console()->Register("mls", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConChatMls, this, "显示播放列表");
 	Console()->Register("skip", "", CFGFLAG_CHAT, ConChatSkip, this, "Vote to skip current song"); // 新增  
+	Console()->Register("ball", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonBall, this, "加入球员身份（羽毛球区域内）");  
+	Console()->Register("red", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonRed, this, "加入红队（羽毛球区域内）");  
+	Console()->Register("blue", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonBlue, this, "加入蓝队（羽毛球区域内）");  
+	Console()->Register("start", "i[score]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonStart, this, "开始羽毛球游戏");
+	Console()->Register("bs", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonStatus, this, "查看羽毛球游戏状态");
 
 	Console()->Register("rankteam", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
 	Console()->Register("teamrank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
@@ -7554,4 +7559,264 @@ void CGameContext::ConChatSkip(IConsole::IResult *pResult, void *pUserData)
                pSelf->Server()->ClientName(ClientID));    
         
     pSelf->CallVote(ClientID, aVoteDesc, aVoteCmd, "跳过当前歌曲", aChatMsg, aVoteDesc);    
+}
+
+void CGameContext::ConBadmintonBall(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(!CheckClientId(pResult->m_ClientId))  
+        return;  
+  
+    CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    // 检查队伍状态（必须在有效队伍中）  
+    int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
+	{  
+		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
+		return;  
+	}
+  
+    if(!pPlayer->m_InBadmintonZone)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "只能在羽毛球区域使用此命令");  
+        return;  
+    }  
+  
+    // 检查队伍内是否已经有ball身份的玩家  
+    for(int i = 0; i < MAX_CLIENTS; i++)  
+    {  
+        if(!pSelf->m_apPlayers[i] || pSelf->GetDDRaceTeam(i) != Team)  
+            continue;  
+          
+        if(pSelf->m_apPlayers[i]->m_BadmintonRole == ROLE_BALL)  
+        {  
+            pSelf->SendChatTarget(pResult->m_ClientId, "队伍中已经有玩家是球了");  
+            return;  
+        }  
+    }  
+  
+    pPlayer->m_BadmintonRole = ROLE_BALL;  
+    if(pPlayer->GetCharacter())  
+        pPlayer->GetCharacter()->SetDeepFrozen(true);  
+      
+    pSelf->SendChatTarget(pResult->m_ClientId, "你现在是球！");  
+}
+  
+void CGameContext::ConBadmintonRed(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(!CheckClientId(pResult->m_ClientId))  
+        return;  
+  
+    CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    // 检查队伍状态  
+	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
+	{  
+		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
+		return;  
+	}
+  
+    if(!pPlayer->m_InBadmintonZone)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "只能在羽毛球区域使用此命令");  
+        return;  
+    }  
+  
+    pPlayer->m_BadmintonRole = ROLE_RED;  
+    pSelf->SendChatTarget(pResult->m_ClientId, "你加入了红队！");  
+}  
+  
+void CGameContext::ConBadmintonBlue(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(!CheckClientId(pResult->m_ClientId))  
+        return;  
+  
+    CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    // 检查队伍状态  
+	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
+	{  
+		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
+		return;  
+	}
+  
+    if(!pPlayer->m_InBadmintonZone)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "只能在羽毛球区域使用此命令");  
+        return;  
+    }  
+  
+    pPlayer->m_BadmintonRole = ROLE_BLUE;  
+    pSelf->SendChatTarget(pResult->m_ClientId, "你加入了蓝队！");  
+}
+
+void CGameContext::ConBadmintonStart(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(!CheckClientId(pResult->m_ClientId))  
+        return;  
+  
+    CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    // 检查队伍状态  
+    int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
+	{  
+		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
+		return;  
+	}
+  
+    if(!pPlayer->m_InBadmintonZone)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "只能在羽毛球区域使用此命令");  
+        return;  
+    }  
+  
+    // 获取队伍游戏状态  
+    SBadmintonGameState *pGameState = &((CGameControllerDDRace*)pSelf->m_pController)->m_aBadmintonGameState[Team];  
+      
+    if(pGameState->m_GameActive)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "羽毛球游戏已经在进行中");  
+        return;  
+    }  
+  
+    int TargetScore = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : 5;  
+    if(TargetScore <= 0 || TargetScore > 50)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "获胜分数必须在1-50之间");  
+        return;  
+    }  
+  
+    // 统计队伍内羽毛球区域的玩家  
+    int RedCount = 0, BlueCount = 0;  
+    bool HasBall = false;  
+	    for(int i = 0; i < MAX_CLIENTS; i++)  
+    {  
+        if(!pSelf->m_apPlayers[i] || pSelf->GetDDRaceTeam(i) != Team)  
+            continue;  
+          
+        if(!pSelf->m_apPlayers[i]->m_InBadmintonZone)  
+            continue;  
+  
+        switch(pSelf->m_apPlayers[i]->m_BadmintonRole)  
+        {  
+            case ROLE_BALL:  
+                HasBall = true;  
+                break;  
+            case ROLE_RED:  
+                RedCount++;  
+                break;  
+            case ROLE_BLUE:  
+                BlueCount++;  
+                break;  
+        }  
+    }  
+  
+    // 检查游戏开始条件  
+    if(!HasBall)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "需要有一个球员才能开始游戏");  
+        return;  
+    }  
+  
+    if(RedCount == 0 || BlueCount == 0)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "红队和蓝队都需要至少有一个玩家");  
+        return;  
+    }  
+  
+    if(RedCount != BlueCount)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "红队和蓝队玩家数量必须相等");  
+        return;  
+    }  
+  
+    // 开始游戏  
+    pGameState->m_GameActive = true;  
+    pGameState->m_GameScore = TargetScore;  
+    pGameState->m_RedScore = 0;  
+    pGameState->m_BlueScore = 0;  
+  
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "羽毛球游戏开始！目标分数：%d", TargetScore);  
+    pSelf->SendChatTeam(Team, aBuf);  
+}
+
+void CGameContext::ConBadmintonStatus(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+    if(!CheckClientId(pResult->m_ClientId))  
+        return;  
+  
+    CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    if(!pPlayer->m_InBadmintonZone)  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "只能在羽毛球区域使用此命令");  
+        return;  
+    }  
+  
+    int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
+    int RedCount = 0, BlueCount = 0;  
+    bool HasBall = false;  
+    char aBallPlayer[64] = "";  
+  
+    // 统计羽毛球区域内的玩家  
+    for(int i = 0; i < MAX_CLIENTS; i++)  
+    {  
+        if(!pSelf->m_apPlayers[i] || pSelf->GetDDRaceTeam(i) != Team)  
+            continue;  
+          
+        if(!pSelf->m_apPlayers[i]->m_InBadmintonZone)  
+            continue;  
+  
+        switch(pSelf->m_apPlayers[i]->m_BadmintonRole)  
+        {  
+            case ROLE_BALL:  
+                HasBall = true;  
+                str_copy(aBallPlayer, pSelf->Server()->ClientName(i));  
+                break;  
+            case ROLE_RED:  
+                RedCount++;  
+                break;  
+            case ROLE_BLUE:  
+                BlueCount++;  
+                break;  
+        }  
+    }  
+  
+    // 显示游戏状态  
+    char aBuf[512];  
+    if(pPlayer->m_BadmintonGameActive)  
+    {  
+        str_format(aBuf, sizeof(aBuf), "游戏进行中 | 目标分数:%d | 当前比分 红队:%d 蓝队:%d",   
+                  pPlayer->m_BadmintonGameScore, pPlayer->m_BadmintonRedScore, pPlayer->m_BadmintonBlueScore);  
+        pSelf->SendChatTarget(pResult->m_ClientId, aBuf);  
+    }  
+    else  
+    {  
+        pSelf->SendChatTarget(pResult->m_ClientId, "游戏未开始");  
+    }  
+  
+    str_format(aBuf, sizeof(aBuf), "红队:%d人 | 蓝队:%d人 | 球员:%s",   
+              RedCount, BlueCount, HasBall ? aBallPlayer : "无");  
+    pSelf->SendChatTarget(pResult->m_ClientId, aBuf);  
 }

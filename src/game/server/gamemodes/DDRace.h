@@ -4,6 +4,24 @@
 
 #include <game/server/gamecontroller.h>
 
+struct SBadmintonGameState  
+{  
+    int m_GameScore;         // 目标获胜分数  
+    int m_RedScore;          // 红队当前分数  
+    int m_BlueScore;         // 蓝队当前分数  
+    bool m_GameActive;       // 游戏是否进行中  
+    int m_LastBroadcastTick; // 上次广播tick  
+      
+    SBadmintonGameState()  
+    {  
+        m_GameScore = 0;  
+        m_RedScore = 0;  
+        m_BlueScore = 0;  
+        m_GameActive = false;  
+        m_LastBroadcastTick = 0;  
+    }  
+}; 
+
 class CGameControllerDDRace : public IGameController
 {
 public:
@@ -17,6 +35,7 @@ public:
 
 	void OnPlayerConnect(class CPlayer *pPlayer) override;
 	void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason) override;
+	SBadmintonGameState m_aBadmintonGameState[NUM_DDRACE_TEAMS]; 
 
 	void OnReset() override;
 

@@ -18,6 +18,7 @@ bool IsValidGameTile(int Index)
 		(Index >= TILE_TELE_LASER_ENABLE && Index <= TILE_TELE_LASER_DISABLE) ||
 		(Index >= TILE_NPC_ENABLE && Index <= TILE_NPH_ENABLE) ||
 		(Index >= TILE_ENTITIES_OFF_1 && Index <= TILE_ENTITIES_OFF_2) ||
+		(Index >= TILE_BADMINTON_ENABLE && Index <= TILE_BLUE_IN) || 
 		IsValidEntity(Index));
 }
 
@@ -40,6 +41,7 @@ bool IsValidFrontTile(int Index)
 		(Index >= TILE_TELE_LASER_ENABLE && Index <= TILE_TELE_LASER_DISABLE) ||
 		(Index >= TILE_NPC_ENABLE && Index <= TILE_NPH_ENABLE) ||
 		(Index >= TILE_ENTITIES_OFF_1 && Index <= TILE_ENTITIES_OFF_2) ||
+		(Index >= TILE_BADMINTON_ENABLE && Index <= TILE_BLUE_IN) || 
 		IsValidEntity(Index));
 }
 

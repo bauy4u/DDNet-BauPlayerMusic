@@ -110,6 +110,101 @@ void CGameControllerDDRace::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		GameServer()->SendChatTarget(ClientId, "You are now out of the solo part");
 		pChr->SetSolo(false);
 	}
+	if(((TileIndex == TILE_BADMINTON_ENABLE) || (TileFIndex == TILE_BADMINTON_ENABLE)) && !pPlayer->m_InBadmintonZone)  
+	{  
+		pPlayer->m_InBadmintonZone = true;  
+		GameServer()->SendChatTarget(ClientId, "进入羽毛球区域！可以使用 /ball, /red, /blue 命令");  
+	}  
+	else if(((TileIndex == TILE_BADMINTON_DISABLE) || (TileFIndex == TILE_BADMINTON_DISABLE)) && pPlayer->m_InBadmintonZone)  
+	{  
+		if(pPlayer->m_BadmintonRole == ROLE_BALL)  
+		{  
+			pChr->SetDeepFrozen(false);  
+		}  
+		
+		pPlayer->m_InBadmintonZone = false;  
+		pPlayer->m_BadmintonRole = ROLE_NONE;  
+		GameServer()->SendChatTarget(ClientId, "离开羽毛球区域");  
+	}  
+	
+	// 羽毛球得分检测（使用IN/OUT图块）  
+	if(pPlayer->m_InBadmintonZone && pPlayer->m_BadmintonRole == ROLE_BALL)  
+	{  
+		int Team = GameServer()->GetDDRaceTeam(ClientId);  
+		if(Team >= TEAM_FLOCK && Team < TEAM_SUPER)  
+		{  
+			SBadmintonGameState *pGameState = &m_aBadmintonGameState[Team];  
+			
+			if(pGameState->m_GameActive)  
+			{  
+				// 红队得分区域（球落到红队区域，蓝队得分）  
+				if((TileIndex == TILE_RED_IN || TileFIndex == TILE_RED_IN) && pPlayer->m_BadmintonRedScoreValid)  
+				{  
+					pGameState->m_BlueScore++;  
+					pPlayer->m_BadmintonRedScoreValid = false;  
+					
+					char aBuf[256];  
+					str_format(aBuf, sizeof(aBuf), "蓝队得分！当前比分 红队:%d 蓝队:%d",   
+							pGameState->m_RedScore, pGameState->m_BlueScore);  
+					GameServer()->SendChatTeam(Team, aBuf);  
+					
+					// 检查游戏结束条件  
+					if(pGameState->m_BlueScore >= pGameState->m_GameScore)  
+					{  
+						GameServer()->SendChatTeam(Team, "蓝队获胜！游戏结束！");  
+						pGameState->m_GameActive = false;  
+						// 重置所有队伍内玩家状态  
+						for(int j = 0; j < MAX_CLIENTS; j++)  
+						{  
+							if(GameServer()->m_apPlayers[j] && GameServer()->GetDDRaceTeam(j) == Team)  
+							{  
+								GameServer()->m_apPlayers[j]->m_BadmintonRole = ROLE_NONE;  
+								if(GameServer()->m_apPlayers[j]->GetCharacter())  
+									GameServer()->m_apPlayers[j]->GetCharacter()->SetDeepFrozen(false);  
+							}  
+						}  
+					}  
+				}  
+				else if((TileIndex == TILE_RED_OUT || TileFIndex == TILE_RED_OUT) && !pPlayer->m_BadmintonRedScoreValid)  
+				{  
+					pPlayer->m_BadmintonRedScoreValid = true;  
+				}  
+				
+				// 蓝队得分区域（球落到蓝队区域，红队得分）  
+				if((TileIndex == TILE_BLUE_IN || TileFIndex == TILE_BLUE_IN) && pPlayer->m_BadmintonBlueScoreValid)  
+				{  
+					pGameState->m_RedScore++;  
+					pPlayer->m_BadmintonBlueScoreValid = false;  
+					
+					char aBuf[256];  
+					str_format(aBuf, sizeof(aBuf), "红队得分！当前比分 红队:%d 蓝队:%d",   
+							pGameState->m_RedScore, pGameState->m_BlueScore);  
+					GameServer()->SendChatTeam(Team, aBuf);  
+					
+					// 检查游戏结束条件  
+					if(pGameState->m_RedScore >= pGameState->m_GameScore)  
+					{  
+						GameServer()->SendChatTeam(Team, "红队获胜！游戏结束！");  
+						pGameState->m_GameActive = false;  
+						// 重置所有队伍内玩家状态  
+						for(int j = 0; j < MAX_CLIENTS; j++)  
+						{  
+							if(GameServer()->m_apPlayers[j] && GameServer()->GetDDRaceTeam(j) == Team)  
+							{  
+								GameServer()->m_apPlayers[j]->m_BadmintonRole = ROLE_NONE;  
+								if(GameServer()->m_apPlayers[j]->GetCharacter())  
+									GameServer()->m_apPlayers[j]->GetCharacter()->SetDeepFrozen(false);  
+							}  
+						}  
+					}  
+				}  
+				else if((TileIndex == TILE_BLUE_OUT || TileFIndex == TILE_BLUE_OUT) && !pPlayer->m_BadmintonBlueScoreValid)  
+				{  
+					pPlayer->m_BadmintonBlueScoreValid = true;  
+				}  
+			}  
+		}  
+	}
 }
 
 void CGameControllerDDRace::SetArmorProgress(CCharacter *pCharacter, int Progress)
@@ -162,6 +257,10 @@ void CGameControllerDDRace::OnReset()
 {
 	IGameController::OnReset();
 	Teams().Reset();
+	for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+    {  
+        m_aBadmintonGameState[i] = SBadmintonGameState();  
+    }  
 }
 
 void CGameControllerDDRace::Tick()
@@ -169,6 +268,28 @@ void CGameControllerDDRace::Tick()
 	IGameController::Tick();
 	Teams().ProcessSaveTeam();
 	Teams().Tick();
+	for(int i = 0; i < MAX_CLIENTS; i++)  
+    {  
+        if(!GameServer()->m_apPlayers[i] || !GameServer()->m_apPlayers[i]->m_InBadmintonZone ||   
+           !GameServer()->m_apPlayers[i]->m_BadmintonGameActive)  
+            continue;  
+  
+        // 每10秒广播一次分数  
+        if(Server()->Tick() - GameServer()->m_apPlayers[i]->m_BadmintonLastBroadcastTick > Server()->TickSpeed() * 10)  
+        {  
+            GameServer()->m_apPlayers[i]->m_BadmintonLastBroadcastTick = Server()->Tick();  
+              
+            char aBuf[256];  
+            str_format(aBuf, sizeof(aBuf), "比分 红队:%d 蓝队:%d (目标:%d)",   
+                      GameServer()->m_apPlayers[i]->m_BadmintonRedScore,   
+                      GameServer()->m_apPlayers[i]->m_BadmintonBlueScore,  
+                      GameServer()->m_apPlayers[i]->m_BadmintonGameScore);  
+              
+            int Team = GameServer()->GetDDRaceTeam(i);  
+            GameServer()->SendChatTeam(Team, aBuf);  
+            break; // 只需要一个玩家广播即可  
+        }  
+    } 
 }
 
 void CGameControllerDDRace::DoTeamChange(class CPlayer *pPlayer, int Team, bool DoChatMsg)

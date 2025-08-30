@@ -19,6 +19,15 @@ class IServer;
 struct CNetObj_PlayerInput;
 struct CScorePlayerResult;
 
+
+	enum EBadmintonRole  
+	{  
+		ROLE_NONE = 0,  
+		ROLE_BALL,  
+		ROLE_RED,  
+		ROLE_BLUE  
+	}; 
+
 // player object
 class CPlayer
 {
@@ -58,6 +67,18 @@ public:
 	const CCharacter *GetCharacter() const;
 
 	void SpectatePlayerName(const char *pName);
+
+
+	bool m_InBadmintonZone;  
+	int m_BadmintonRole;
+	int m_BadmintonGameScore;      // 目标获胜分数  
+	int m_BadmintonRedScore;       // 红队当前分数  
+	int m_BadmintonBlueScore;      // 蓝队当前分数  
+	bool m_BadmintonGameActive;    // 游戏是否进行中
+	int m_BadmintonLastScoreTick; 
+	int m_BadmintonLastBroadcastTick; 
+	bool m_BadmintonRedScoreValid;   // 红队得分校验变量  
+	bool m_BadmintonBlueScoreValid;  // 蓝队得分校验变量
 
 	//---------------------------------------------------------
 	// this is used for snapping so we know how we can clip the view for the player
