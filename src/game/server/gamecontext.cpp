@@ -22,6 +22,7 @@
 #include <engine/storage.h>
 #include <base/hash.h>  
 #include <base/hash_ctxt.h>
+#include <engine/external/json-parser/json.h>
 
 #include <string>
 #include <sstream> 
@@ -131,6 +132,11 @@ void CGameContext::Construct(int Resetting)
 
 	m_aDeleteTempfile[0] = 0;
 	m_TeeHistorianActive = false;
+	m_CurrentSongIndex = -1;  
+	m_CurrentSongStartTime = 0;  
+	m_CurrentSongDuration = 0.0f;  
+	m_IsPlayingFromQueue = false;  
+	m_NextPreloadIndex = 0;
 }
 
 void CGameContext::Destruct(int Resetting)
@@ -187,6 +193,13 @@ void CGameContext::Clear()
 	CSongCooldowns SongCooldowns = m_SongCooldowns; 
 	int64_t LastSongChangeTime = m_LastSongChangeTime;
 
+	std::queue<SongInfo> PlaylistQueue = m_PlaylistQueue;  
+    int CurrentSongIndex = m_CurrentSongIndex;  
+    int64_t CurrentSongStartTime = m_CurrentSongStartTime;  
+    float CurrentSongDuration = m_CurrentSongDuration;  
+    bool IsPlayingFromQueue = m_IsPlayingFromQueue;  
+    int NextPreloadIndex = m_NextPreloadIndex;  
+
 	m_Resetting = true;
 	this->~CGameContext();
 	new(this) CGameContext(RESET);
@@ -200,6 +213,12 @@ void CGameContext::Clear()
 	m_VoteMutes = VoteMutes;
 	m_SongCooldowns = SongCooldowns;
 	m_LastSongChangeTime = LastSongChangeTime;
+	m_PlaylistQueue = PlaylistQueue;  
+    m_CurrentSongIndex = CurrentSongIndex;  
+    m_CurrentSongStartTime = CurrentSongStartTime;  
+    m_CurrentSongDuration = CurrentSongDuration;  
+    m_IsPlayingFromQueue = IsPlayingFromQueue;  
+    m_NextPreloadIndex = NextPreloadIndex; 
 }
 
 void CGameContext::TeeHistorianWrite(const void *pData, int DataSize, void *pUser)
@@ -1070,7 +1089,10 @@ void CGameContext::OnTick()
     if(Server()->Tick() % (Server()->TickSpeed() / 10) == 0)  
     {  
         CheckAndSendLyrics();  
+		CheckSongTransition() ;
+		 
     }  
+
 
 	UpdatePlayerMaps();
 
@@ -3757,7 +3779,10 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("lyrics_start", "", CFGFLAG_SERVER, ConStartLyrics, this, "Start displaying lyrics");  
 	Console()->Register("lyrics_stop", "", CFGFLAG_SERVER, ConStopLyrics, this, "Stop displaying lyrics");  
 	Console()->Register("lyrics_load", "s[song_id]", CFGFLAG_SERVER, ConLoadLyrics, this, "Load lyrics for song");
-
+   	Console()->Register("queue_status", "", CFGFLAG_SERVER, ConQueueStatus, this, "Show queue status and validate state");  
+    Console()->Register("queue_clear", "", CFGFLAG_SERVER, ConQueueClear, this, "Clear the song queue");  
+    Console()->Register("queue_skip", "", CFGFLAG_SERVER, ConQueueSkip, this, "Skip current song and play next");  
+    Console()->Register("queue_restart", "", CFGFLAG_SERVER, ConQueueRestart, this, "Restart queue playback from beginning");  
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
 	Console()->Register("remove_vote", "r[name]", CFGFLAG_SERVER, ConRemoveVote, this, "remove a voting option");
 	Console()->Register("force_vote", "s[name] s[command] ?r[reason]", CFGFLAG_SERVER, ConForceVote, this, "Force a voting option");
@@ -4163,6 +4188,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 	m_pAntibot->RoundStart(this);
 	LoadPlaylistFromFile();  
 	LoadLyricsState();  
+	RestoreQueuePlaybackState();  
 }
 
 void CGameContext::CreateAllEntities(bool Initial)
@@ -5933,7 +5959,7 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
     // 创建HTTP请求    
     auto pRequest = std::make_shared<CHttpRequest>(aUrl);    
     pRequest->WriteToMemory();    
-    pRequest->Timeout(CTimeout{5000, 10000, 500, 20});    
+    pRequest->Timeout(CTimeout{30000, 100000, 500, 30});    
         
     // 在主线程中启动HTTP请求    
     pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);    
@@ -6187,123 +6213,103 @@ void CSongDownloadJob::Run()
 }
 
 
-void CGameContext::ConDownloadSong(IConsole::IResult *pResult, void *pUserData)    
-{    
-    CGameContext *pSelf = (CGameContext *)pUserData;    
-      
-    // 添加函数调用确认  
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== ConDownloadSong function called ===");  
-      
-    // 检查参数数量  
-    char aBuf[512];  
-    str_format(aBuf, sizeof(aBuf), "Arguments received: %d", pResult->NumArguments());  
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
-      
-    // 打印所有参数  
-    for(int i = 0; i < pResult->NumArguments(); i++)  
-    {  
-        str_format(aBuf, sizeof(aBuf), "Arg[%d]: '%s'", i, pResult->GetString(i));  
-        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
-    }  
+void CGameContext::ConDownloadSong(IConsole::IResult *pResult, void *pUserData)      
+{      
+    CGameContext *pSelf = (CGameContext *)pUserData;      
         
-    if(pResult->NumArguments() < 3)    
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== ConDownloadSong: Adding to queue only ===");    
+        
+    if(pResult->NumArguments() < 3)      
+    {      
+        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "ERROR: Invalid arguments for download_song");      
+        return;      
+    }      
+          
+    // 创建歌曲信息并添加到队列      
+    SongInfo Song;      
+    Song.title = pResult->GetString(0);      
+    Song.artist = pResult->GetString(1);      
+    Song.page_url = pResult->GetString(2);  
+    Song.duration = 0.0f;      // 初始化为0，稍后获取  
+    Song.isPreloaded = false;  // 未预加载  
+    Song.isReady = false;      // 未准备好  
+          
+    // 只添加到播放队列，不执行下载      
+    pSelf->AddToPlaylist(Song);      
+      
+    // 如果这是队列中的第一首歌，立即开始预加载  
+    if(pSelf->m_PlaylistQueue.size() == 1 && !pSelf->m_IsPlayingFromQueue)
+    {  
+        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for first song in queue");  
+        pSelf->InitializeQueuePlayback();  
+    }  
+      
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== Song added to queue successfully ===");    
+}
+
+void CGameContext::AddToPlaylist(const SongInfo &Song)    
+{    
+    m_PlaylistQueue.push(Song);    
+        
+    char aBuf[256];    
+    str_format(aBuf, sizeof(aBuf), "歌曲 '%s - %s' 已添加到播放队列 (队列长度: %d)",     
+               Song.title.c_str(), Song.artist.c_str(), (int)m_PlaylistQueue.size());    
+    SendChatTarget(-1, aBuf);    
+      
+    // 保存队列到文件  
+    SavePlaylistToFile();  
+}
+  
+void CGameContext::ShowPlaylist(int ClientID)    
+{    
+    if(m_PlaylistQueue.empty())    
     {    
-        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "ERROR: Invalid arguments for download_song");    
+        SendChatTarget(ClientID, "播放队列为空");    
         return;    
     }    
         
-    // 直接从参数中获取歌曲信息，不再依赖搜索结果    
-    SongInfo Song;    
-    Song.title = pResult->GetString(0);    
-    Song.artist = pResult->GetString(1);    
-    Song.page_url = pResult->GetString(2);    
+    SendChatTarget(ClientID, "=== 播放队列 ===");    
       
-    // 打印解析后的歌曲信息  
-    str_format(aBuf, sizeof(aBuf), "Parsed song - Title: '%s', Artist: '%s', URL: '%s'",   
-               Song.title.c_str(), Song.artist.c_str(), Song.page_url.c_str());  
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
-        
-    // 添加到播放队列    
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Adding song to playlist...");  
-    pSelf->AddToPlaylist(Song);    
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Song added to playlist successfully");  
-        
-    // 复用原有的下载逻辑    
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting download process...");  
-      
-    std::string EscapedTitle = EscapeJsonString(Song.title);    
-    std::string EscapedArtist = EscapeJsonString(Song.artist);    
-    std::string EscapedUrl = EscapeJsonString(Song.page_url);    
-    
-    std::ostringstream JsonStream;    
-    JsonStream << "{"    
-               << "\"title\": \"" << EscapedTitle << "\","    
-               << "\"artist\": \"" << EscapedArtist << "\","    
-               << "\"page_url\": \"" << EscapedUrl << "\""    
-               << "}";    
-        
-    std::string JsonString = JsonStream.str();    
-      
-    // 打印发送的JSON  
-    str_format(aBuf, sizeof(aBuf), "Sending JSON: %s", JsonString.c_str());  
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
-        
-    auto pRequest = std::make_shared<CHttpRequest>("http://127.0.0.1:5000/download");      
-    pRequest->PostJson(JsonString.c_str());      
-    pRequest->WriteToMemory();      
-    pRequest->Timeout(CTimeout{60000, 120000, 500, 30}); // 增加到120秒总超时  
-        
-    pSelf->Kernel()->RequestInterface<IHttp>()->Run(pRequest);      
-        
-    auto pJob = std::make_shared<CSongDownloadJob>(pSelf, -1, pRequest, Song.title, Song.artist, Song.page_url);
-    pSelf->Engine()->AddJob(pJob);    
-      
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "HTTP request and job created successfully");  
-    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== ConDownloadSong function completed ===");  
-}
-
-void CGameContext::AddToPlaylist(const SongInfo &Song)  
-{  
-    m_PlaylistQueue.push(Song);  
-      
-    char aBuf[256];  
-    str_format(aBuf, sizeof(aBuf), "歌曲 '%s - %s' 已添加到播放队列 (队列长度: %d)",   
-               Song.title.c_str(), Song.artist.c_str(), (int)m_PlaylistQueue.size());  
-    SendChatTarget(-1, aBuf);  
-}  
-  
-void CGameContext::ShowPlaylist(int ClientID)  
-{  
-    if(m_PlaylistQueue.empty())  
+    // 显示当前播放状态  
+    if(m_IsPlayingFromQueue && m_CurrentSongIndex >= 0)  
     {  
-        SendChatTarget(ClientID, "播放队列为空");  
-        return;  
+        char aStatusBuf[128];  
+        str_format(aStatusBuf, sizeof(aStatusBuf), "当前播放: 第 %d 首歌曲", m_CurrentSongIndex + 1);  
+        SendChatTarget(ClientID, aStatusBuf);  
     }  
-      
-    SendChatTarget(ClientID, "=== 播放队列 ===");  
-      
-    // 创建队列副本来遍历  
-    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
-    int Index = 1;  
-      
-    while(!TempQueue.empty() && Index <= 10) // 最多显示10首  
-    {  
-        const SongInfo &Song = TempQueue.front();  
+        
+    // 创建队列副本来遍历    
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;    
+    int Index = 1;    
+        
+    while(!TempQueue.empty() && Index <= 10) // 最多显示10首    
+    {    
+        const SongInfo &Song = TempQueue.front();    
         char aBuf[256];  
-        str_format(aBuf, sizeof(aBuf), "%d. %s - %s",   
-                   Index, Song.title.c_str(), Song.artist.c_str());  
-        SendChatTarget(ClientID, aBuf);  
-        TempQueue.pop();  
-        Index++;  
-    }  
-      
-    if(m_PlaylistQueue.size() > 10)  
-    {  
-        char aBuf[64];  
-        str_format(aBuf, sizeof(aBuf), "... 还有 %d 首歌曲",   
-                   (int)m_PlaylistQueue.size() - 10);  
-        SendChatTarget(ClientID, aBuf);  
-    }  
+          
+        // 显示歌曲状态  
+        const char *pStatus = "";  
+        if(Index - 1 == m_CurrentSongIndex)  
+            pStatus = " [正在播放]";  
+        else if(Song.isReady)  
+            pStatus = " [已准备]";  
+        else if(Song.isPreloaded)  
+            pStatus = " [预加载中]";  
+              
+        str_format(aBuf, sizeof(aBuf), "%d. %s - %s%s",     
+                   Index, Song.title.c_str(), Song.artist.c_str(), pStatus);    
+        SendChatTarget(ClientID, aBuf);    
+        TempQueue.pop();    
+        Index++;    
+    }    
+        
+    if(m_PlaylistQueue.size() > 10)    
+    {    
+        char aBuf[64];    
+        str_format(aBuf, sizeof(aBuf), "... 还有 %d 首歌曲",     
+                   (int)m_PlaylistQueue.size() - 10);    
+        SendChatTarget(ClientID, aBuf);    
+    }    
 }
 
 void CGameContext::ConChatMls(IConsole::IResult *pResult, void *pUserData)  
@@ -6314,101 +6320,158 @@ void CGameContext::ConChatMls(IConsole::IResult *pResult, void *pUserData)
     pSelf->ShowPlaylist(ClientID);  
 }
 
-void CGameContext::LoadPlaylistFromFile()
-{
-	const char *pFilePath = "data/musico/playlist.txt";
-
-	// 清空当前队列
-	while(!m_PlaylistQueue.empty())
-		m_PlaylistQueue.pop();
-
-	if(!Storage()->FileExists(pFilePath, IStorage::TYPE_SAVE))
-	{
-		dbg_msg("playlist", "Playlist file does not exist: %s", pFilePath);
-		return;
-	}
-
-	IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_READ, IStorage::TYPE_SAVE);
-	if(!File)
-	{
-		dbg_msg("playlist", "Failed to open playlist file for reading: %s", pFilePath);
-		return;
-	}
-
-	CLineReader LineReader;
-	LineReader.OpenFile(File); // 在 DDNet/Teeworlds 中，OpenFile 不返回 bool
-
-	int LoadedCount = 0;
-	const char *pLine;
-
-	while((pLine = LineReader.Get()) != nullptr)
-	{
-		char aBuffer[1024];
-		str_copy(aBuffer, pLine, sizeof(aBuffer));
-
-		char *pTitle = aBuffer;
-		char *pArtist = (char *)str_find(pTitle, "|");
-		if(!pArtist)
-			continue;
-
-        // [!! 修正 !!] 使用 \0 来表示真正的空终止符
-		*pArtist = '\0';
-		pArtist++;
-
-		char *pUrl = (char *)str_find(pArtist, "|");
-		if(!pUrl)
-			continue;
-        
-        // [!! 修正 !!] 使用 \0 来表示真正的空终止符
-		*pUrl = '\0';
-		pUrl++;
-
-		SongInfo Song;
-		Song.title = pTitle;
-		Song.artist = pArtist;
-		Song.page_url = pUrl;
-
-		m_PlaylistQueue.push(Song);
-		LoadedCount++;
-	}
-
-	io_close(File); // [!! 补充 !!] 读取完毕后也应该关闭文件句柄
-	dbg_msg("playlist", "Loaded %d songs from playlist file", LoadedCount);
-}
-
-void CGameContext::SavePlaylistToFile()  
+void CGameContext::LoadPlaylistFromFile()  
 {  
-    // 确保目录存在  
-    Storage()->CreateFolder("data", IStorage::TYPE_SAVE);  
-    Storage()->CreateFolder("data/musico", IStorage::TYPE_SAVE);  
-      
     const char *pFilePath = "data/musico/playlist.txt";  
-    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_WRITE, IStorage::TYPE_SAVE);  
-    if(!File)  
+  
+    // 清空当前队列  
+    while(!m_PlaylistQueue.empty())  
+        m_PlaylistQueue.pop();  
+  
+    // 重置队列状态  
+    m_CurrentSongIndex = -1;  
+    m_CurrentSongStartTime = 0;  
+    m_CurrentSongDuration = 0.0f;  
+    m_IsPlayingFromQueue = false;  
+    m_NextPreloadIndex = 0;  
+  
+    if(!Storage()->FileExists(pFilePath, IStorage::TYPE_SAVE))  
     {  
-        dbg_msg("playlist", "Failed to open playlist file for writing: %s", pFilePath);  
+        dbg_msg("playlist", "Playlist file does not exist: %s", pFilePath);  
         return;  
     }  
-      
-    // 创建队列副本来遍历  
-    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
-      
-    while(!TempQueue.empty())  
+  
+    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_READ, IStorage::TYPE_SAVE);  
+    if(!File)  
     {  
-        const SongInfo &Song = TempQueue.front();  
-          
-        // 写入格式：title|artist|page_url  
-        char aLine[1024];  
-        // [!! 修正 !!] 使用 \n 来表示真正的换行符
-        str_format(aLine, sizeof(aLine), "%s|%s|%s\n",   
-                   Song.title.c_str(), Song.artist.c_str(), Song.page_url.c_str());  
-          
-        io_write(File, aLine, str_length(aLine));  
-        TempQueue.pop();  
+        dbg_msg("playlist", "Failed to open playlist file for reading: %s", pFilePath);  
+        return;  
     }  
-      
+  
+    CLineReader LineReader;  
+    LineReader.OpenFile(File);  
+  
+    int LoadedCount = 0;  
+    const char *pLine;  
+    bool StateLoaded = false;  
+  
+    while((pLine = LineReader.Get()) != nullptr)  
+    {  
+        char aBuffer[1024];  
+        str_copy(aBuffer, pLine, sizeof(aBuffer));  
+  
+        // 检查是否是状态行  
+        if(str_comp_num(aBuffer, "STATE|", 6) == 0)  
+        {  
+            // 解析状态行：STATE|CurrentIndex|StartTime|Duration|IsPlaying|NextPreloadIndex  
+            char *pStateData = aBuffer + 6; // 跳过 "STATE|"  
+              
+            char *pIndex = pStateData;  
+            char *pStartTime = (char *)str_find(pIndex, "|");  
+            if(!pStartTime) continue;  
+            *pStartTime = '\0'; pStartTime++;  
+              
+            char *pDuration = (char *)str_find(pStartTime, "|");  
+            if(!pDuration) continue;  
+            *pDuration = '\0'; pDuration++;  
+              
+            char *pIsPlaying = (char *)str_find(pDuration, "|");  
+            if(!pIsPlaying) continue;  
+            *pIsPlaying = '\0'; pIsPlaying++;  
+              
+            char *pNextPreload = (char *)str_find(pIsPlaying, "|");  
+            if(!pNextPreload) continue;  
+            *pNextPreload = '\0'; pNextPreload++;  
+              
+            // 恢复状态  
+            m_CurrentSongIndex = str_toint(pIndex);  
+            m_CurrentSongStartTime = str_toint64_base(pStartTime, 10);
+            m_CurrentSongDuration = str_tofloat(pDuration);  
+            m_IsPlayingFromQueue = (str_comp(pIsPlaying, "true") == 0);  
+            m_NextPreloadIndex = str_toint(pNextPreload);  
+              
+            StateLoaded = true;  
+            continue;  
+        }  
+  
+        // 解析歌曲行：title|artist|page_url|duration|isPreloaded|isReady  
+        char *pTitle = aBuffer;  
+        char *pArtist = (char *)str_find(pTitle, "|");  
+        if(!pArtist) continue;  
+        *pArtist = '\0'; pArtist++;  
+  
+        char *pUrl = (char *)str_find(pArtist, "|");  
+        if(!pUrl) continue;  
+        *pUrl = '\0'; pUrl++;  
+  
+        char *pDuration = (char *)str_find(pUrl, "|");  
+        if(!pDuration) continue;  
+        *pDuration = '\0'; pDuration++;  
+  
+        char *pIsPreloaded = (char *)str_find(pDuration, "|");  
+        if(!pIsPreloaded) continue;  
+        *pIsPreloaded = '\0'; pIsPreloaded++;  
+  
+        char *pIsReady = (char *)str_find(pIsPreloaded, "|");  
+        if(!pIsReady) continue;  
+        *pIsReady = '\0'; pIsReady++;  
+  
+        SongInfo Song;  
+        Song.title = pTitle;  
+        Song.artist = pArtist;  
+        Song.page_url = pUrl;  
+        Song.duration = str_tofloat(pDuration);  
+        Song.isPreloaded = (str_comp(pIsPreloaded, "true") == 0);  
+        Song.isReady = (str_comp(pIsReady, "true") == 0);  
+  
+        m_PlaylistQueue.push(Song);  
+        LoadedCount++;  
+    }  
+  
     io_close(File);  
-    dbg_msg("playlist", "Saved %d songs to playlist file", (int)m_PlaylistQueue.size());  
+    dbg_msg("playlist", "Loaded %d songs and queue state from playlist file", LoadedCount);  
+}
+
+void CGameContext::SavePlaylistToFile()    
+{    
+    // 确保目录存在    
+    Storage()->CreateFolder("data", IStorage::TYPE_SAVE);    
+    Storage()->CreateFolder("data/musico", IStorage::TYPE_SAVE);    
+        
+    const char *pFilePath = "data/musico/playlist.txt";    
+    IOHANDLE File = Storage()->OpenFile(pFilePath, IOFLAG_WRITE, IStorage::TYPE_SAVE);    
+    if(!File)    
+    {    
+        dbg_msg("playlist", "Failed to open playlist file for writing: %s", pFilePath);    
+        return;    
+    }    
+      
+    // 首先保存队列状态信息  
+    char aStateLine[256];  
+    str_format(aStateLine, sizeof(aStateLine), "STATE|%d|%lld|%.2f|%s|%d\n",  
+               m_CurrentSongIndex, m_CurrentSongStartTime, m_CurrentSongDuration,  
+               m_IsPlayingFromQueue ? "true" : "false", m_NextPreloadIndex);  
+    io_write(File, aStateLine, str_length(aStateLine));  
+        
+    // 创建队列副本来遍历    
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;    
+        
+    while(!TempQueue.empty())    
+    {    
+        const SongInfo &Song = TempQueue.front();    
+            
+        // 写入格式：title|artist|page_url|duration|isPreloaded|isReady  
+        char aLine[1024];    
+        str_format(aLine, sizeof(aLine), "%s|%s|%s|%.2f|%s|%s\n",     
+                   Song.title.c_str(), Song.artist.c_str(), Song.page_url.c_str(),  
+                   Song.duration, Song.isPreloaded ? "true" : "false", Song.isReady ? "true" : "false");    
+            
+        io_write(File, aLine, str_length(aLine));    
+        TempQueue.pop();    
+    }    
+        
+    io_close(File);    
+    dbg_msg("playlist", "Saved %d songs and queue state to playlist file", (int)m_PlaylistQueue.size());    
 }
 
 void CGameContext::LoadLyrics(const std::string& songId)    
@@ -6641,32 +6704,722 @@ void CGameContext::RequestUploadToObjectStorage(const char *pMapName, const char
 CMapUploadJob::CMapUploadJob(CGameContext *pGameContext, std::shared_ptr<CHttpRequest> pRequest) :  
     m_pGameContext(pGameContext), m_pRequest(pRequest) {}  
   
-void CMapUploadJob::Run()
-{
-	m_pRequest->Wait();
+void CMapUploadJob::Run()  
+{  
+    m_pRequest->Wait();  
+  
+    if(m_pRequest->State() == EHttpState::DONE)  
+    {  
+        // 正确的方式获取响应数据  
+        unsigned char *pResult;  
+        size_t ResultLength;  
+        m_pRequest->Result(&pResult, &ResultLength);  
+  
+        if(pResult && str_find((const char *)pResult, "\"success\":true"))  
+        {  
+            // 上传成功  
+            m_pGameContext->SendChatTarget(-1, "地图文件上传完成，歌曲已准备就绪");  
+              
+            // 添加调试信息  
+            char aBuf[256];  
+            str_format(aBuf, sizeof(aBuf), "Debug: CurrentSongIndex=%d, QueueSize=%d, IsPlaying=%s",   
+                       m_pGameContext->m_CurrentSongIndex, (int)m_pGameContext->m_PlaylistQueue.size(),  
+                       m_pGameContext->m_IsPlayingFromQueue ? "true" : "false");  
+            m_pGameContext->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+              
+            // 修改条件：检查是否还没有开始播放队列  
+            if(!m_pGameContext->m_IsPlayingFromQueue && !m_pGameContext->m_PlaylistQueue.empty())
+            {  
+                m_pGameContext->SendChatTarget(-1, "开始播放第一首歌曲...");  
+                m_pGameContext->Console()->ExecuteLine("hot_reload");  
+                  
+                // 设置播放状态  
+                m_pGameContext->m_CurrentSongIndex = 0;  
+                m_pGameContext->m_CurrentSongStartTime = time_timestamp();  
+                m_pGameContext->m_IsPlayingFromQueue = true;  
+                  
+                // 获取第一首歌的时长  
+                SongInfo *pFirstSong = m_pGameContext->GetQueuedSong(0);  
+                if(pFirstSong)  
+                {  
+                    m_pGameContext->m_CurrentSongDuration = pFirstSong->duration;  
+                }  
+            }  
+            else  
+            {  
+                m_pGameContext->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Condition not met for first song reload");  
+            }  
+        }  
+        else  
+        {  
+            m_pGameContext->SendChatTarget(-1, "地图文件上传失败，但歌曲已准备就绪");  
+        }  
+    }  
+    else  
+    {  
+        m_pGameContext->SendChatTarget(-1, "上传请求失败，但歌曲已准备就绪");  
+    }  
+}
+void CGameContext::InitializeQueuePlayback()    
+{    
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== InitializeQueuePlayback called ===");    
+        
+    if(m_PlaylistQueue.empty())    
+    {    
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Cannot initialize: queue is empty");    
+        return;    
+    }    
+        
+    // 重置播放状态  
+    m_CurrentSongIndex = -1;    
+    m_IsPlayingFromQueue = false;    
+    m_CurrentSongStartTime = 0;    
+    m_CurrentSongDuration = 0.0f;    
+        
+    // 开始预加载第一首歌    
+    StartPreloadingSong(0);    
+        
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue playback initialized, starting first song preload");    
+}
 
-	if(m_pRequest->State() == EHttpState::DONE)
-	{
-		// 正确的方式获取响应数据
-		unsigned char *pResult;
-		size_t ResultLength;
-		m_pRequest->Result(&pResult, &ResultLength);
+SongInfo* CGameContext::GetQueuedSong(int Index)  
+{  
+    if(Index < 0 || Index >= (int)m_PlaylistQueue.size())  
+        return nullptr;  
+      
+    // 由于std::queue不支持索引访问，使用静态变量存储临时结果  
+    static std::vector<SongInfo> s_QueueSnapshot;  
+      
+    // 重新构建快照  
+    s_QueueSnapshot.clear();  
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
+      
+    while(!TempQueue.empty())  
+    {  
+        s_QueueSnapshot.push_back(TempQueue.front());  
+        TempQueue.pop();  
+    }  
+      
+    if(Index >= (int)s_QueueSnapshot.size())  
+        return nullptr;  
+          
+    return &s_QueueSnapshot[Index];  
+}
 
-		if(pResult && str_find((const char *)pResult, "\"success\":true"))
-		{
-			// 上传成功，触发重载
-			m_pGameContext->SendChatTarget(-1, "地图文件上传完成，正在重载...");
-			m_pGameContext->Console()->ExecuteLine("hot_reload");
-		}
-		else
-		{
-			m_pGameContext->SendChatTarget(-1, "地图文件上传失败，使用本地版本重载...");
-			m_pGameContext->Console()->ExecuteLine("hot_reload");
-		}
+void CGameContext::StartPreloadingSong(int QueueIndex)  
+{  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== StartPreloadingSong called ===");  
+	static std::set<int> s_PreloadingIndices;  
+    if(s_PreloadingIndices.count(QueueIndex) > 0)  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Song already being preloaded, skipping");  
+        return;  
+    }  
+      
+    if(m_PlaylistQueue.empty())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Cannot preload: queue is empty");  
+        return;  
+    }  
+      
+    SongInfo *pSong = GetQueuedSong(QueueIndex);  
+    if(!pSong)  
+    {  
+        char aBuf[128];  
+        str_format(aBuf, sizeof(aBuf), "Cannot get song at index %d", QueueIndex);  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+        return;  
+    }  
+      
+    if(pSong->isPreloaded)  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Song already preloaded");  
+        return;  
+    }  
+      
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "Starting preload for: '%s - %s'",   
+               pSong->title.c_str(), pSong->artist.c_str());  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+
+	s_PreloadingIndices.insert(QueueIndex); 
+      
+    // 获取HTTP接口并创建预加载Job  
+    IHttp *pHttp = Kernel()->RequestInterface<IHttp>();  
+    auto pJob = std::make_shared<CSongPreloadJob>(this, *pSong, QueueIndex, pHttp);  
+    Engine()->AddJob(pJob);  
+      
+    // 标记为预加载中  
+    pSong->isPreloaded = true;  
+}
+
+void CSongPreloadJob::Run()  
+{  
+    m_pGameContext->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== CSongPreloadJob::Run started ===");  
+      
+    // 使用DDNet现有的EscapeJson函数进行JSON转义  
+    char aEscapedTitle[512];  
+    char aEscapedArtist[512];   
+    char aEscapedUrl[1024];  
+  
+    EscapeJson(aEscapedTitle, sizeof(aEscapedTitle), m_Song.title.c_str());  
+    EscapeJson(aEscapedArtist, sizeof(aEscapedArtist), m_Song.artist.c_str());  
+    EscapeJson(aEscapedUrl, sizeof(aEscapedUrl), m_Song.page_url.c_str());  
+      
+    // 构造JSON字符串  
+    char aJsonString[2048];  
+    str_format(aJsonString, sizeof(aJsonString),   
+               "{"  
+               "\"title\": \"%s\","  
+               "\"artist\": \"%s\","  
+               "\"page_url\": \"%s\""  
+               "}",   
+               aEscapedTitle, aEscapedArtist, aEscapedUrl);  
+      
+    // 发起HTTP下载请求  
+    auto pRequest = std::make_shared<CHttpRequest>("http://127.0.0.1:5000/download");  
+    pRequest->PostJson(aJsonString);  
+    pRequest->WriteToMemory();  
+    pRequest->Timeout(CTimeout{60000, 120000, 500, 30});  
+      
+    m_pHttp->Run(pRequest);  
+      
+    // 等待下载完成  
+    pRequest->Wait();  
+      
+    if(pRequest->State() != EHttpState::DONE)  
+    {  
+        m_pGameContext->HandlePreloadFailure(m_QueueIndex, "HTTP request failed");  
+        return;  
+    }  
+      
+    // 解析响应获取时长和状态  
+    json_value *pJson = pRequest->ResultJson();  
+    if(!pJson)  
+    {  
+        m_pGameContext->HandlePreloadFailure(m_QueueIndex, "JSON parse failed");  
+        return;  
+    }  
+      
+    bool Success = false;  
+    float Duration = 0.0f;  
+      
+    if(pJson->type == json_object)  
+    {  
+        for(unsigned i = 0; i < pJson->u.object.length; i++)  
+        {  
+            const char *pKey = pJson->u.object.values[i].name;  
+            json_value *pValue = pJson->u.object.values[i].value;  
+              
+            if(str_comp(pKey, "status") == 0 && pValue->type == json_string)  
+            {  
+                if(str_comp((const char*)pValue->u.string.ptr, "success") == 0)  
+                    Success = true;  
+            }  
+            // [!! 关键修正 !!]
+            // 此处是唯一被修改的逻辑部分，用于正确解析 duration 字段
+			else if(str_comp(pKey, "duration") == 0)
+			{
+                // 如果 Python 返回的是浮点数 (e.g., 180.25), 类型会是 json_double
+				if(pValue->type == json_double)
+                {
+				    Duration = (float)pValue->u.dbl;
+                }
+                // 如果 Python 返回的恰好是整数 (e.g., 180.0), 类型可能会是 json_integer
+                else if(pValue->type == json_integer)
+                {
+                    Duration = (float)pValue->u.integer;
+                }
+			}
+        }  
+    }  
+      
+    if(Success && Duration > 0.0f)  
+    {  
+        // 成功获取到时长，调用处理函数  
+        m_pGameContext->ProcessPreloadedSong(m_Song, Duration, m_QueueIndex);  
+    }  
+    else  
+    {  
+        // 失败处理
+        const char *pReason = Success ? "Invalid duration received" : "Download status was not success";  
+        m_pGameContext->HandlePreloadFailure(m_QueueIndex, pReason);  
+    }  
+      
+    json_value_free(pJson);  
+}
+
+void CGameContext::ProcessPreloadedSong(const SongInfo &Song, float Duration, int QueueIndex)  
+{  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== ProcessPreloadedSong started ===");  
+      
+    // 生成歌曲ID  
+    std::string SongId = Song.page_url;  // "1462753116"  
+      
+    // 读取下载的音频文件  
+    char aFilePath[IO_MAX_PATH_LENGTH];  
+    str_format(aFilePath, sizeof(aFilePath), "data/musicso/%s.opus", SongId.c_str());  
+      
+    void *pAudioData;  
+    unsigned AudioDataSize;  
+    if(!Storage()->ReadFile(aFilePath, IStorage::TYPE_ALL, &pAudioData, &AudioDataSize))  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Failed to read preloaded audio file");  
+        return;  
+    }  
+      
+    // 执行地图音频嵌入（复用现有逻辑）  
+    char aOriginMapPath[IO_MAX_PATH_LENGTH];  
+    str_format(aOriginMapPath, sizeof(aOriginMapPath), "data/originmaps/%s.map", Server()->GetMapName());  
+      
+    char aTargetMapPath[IO_MAX_PATH_LENGTH];  
+    str_format(aTargetMapPath, sizeof(aTargetMapPath), "maps/%s.map", Server()->GetMapName());  
+      
+    if(ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, SongId.c_str(), pAudioData, AudioDataSize, true))  
+    {  
+        // 加载歌词  
+        LoadLyrics(SongId);  
+          
+        // 更新队列中的歌曲信息  
+        UpdateSongInQueue(QueueIndex, Duration);  
+          
+        // 如果这是第一首歌且当前没有播放任何歌曲，立即开始播放  
+        if(QueueIndex == 0 && !m_IsPlayingFromQueue)
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "First song ready, starting playback immediately");  
+            m_CurrentSongIndex = 0;  
+            m_CurrentSongStartTime = time_timestamp();  
+            m_CurrentSongDuration = Duration;  
+            m_IsPlayingFromQueue = true;  
+              
+            // 执行服务器重载开始播放第一首歌  
+            Console()->ExecuteLine("hot_reload");  
+              
+            char aBuf[256];  
+            str_format(aBuf, sizeof(aBuf), "开始播放: '%s - %s'", Song.title.c_str(), Song.artist.c_str());  
+            SendChatTarget(-1, aBuf);  
+        }  
+    }  
+      
+	static std::set<int> s_PreloadingIndices;  
+	s_PreloadingIndices.erase(QueueIndex);
+    free(pAudioData);  
+}
+
+void CGameContext::UpdateSongInQueue(int Index, float Duration)  
+{  
+    if(Index < 0 || Index >= (int)m_PlaylistQueue.size())  
+    {  
+        char aBuf[128];  
+        str_format(aBuf, sizeof(aBuf), "Invalid queue index for update: %d", Index);  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+        return;  
+    }  
+      
+    // 重建队列以更新指定歌曲  
+    std::queue<SongInfo> NewQueue;  
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
+      
+    int CurrentIndex = 0;  
+    bool Updated = false;  
+      
+    while(!TempQueue.empty())  
+    {  
+        SongInfo Song = TempQueue.front();  
+        TempQueue.pop();  
+          
+        if(CurrentIndex == Index)  
+        {  
+            Song.duration = Duration;  
+            Song.isReady = true;  
+            Updated = true;  
+              
+            char aBuf[256];  
+            str_format(aBuf, sizeof(aBuf), "Updated song at index %d: '%s - %s' duration=%.2f, ready=true",   
+                       Index, Song.title.c_str(), Song.artist.c_str(), Duration);  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+        }  
+          
+        NewQueue.push(Song);  
+        CurrentIndex++;  
+    }  
+      
+    if(Updated)  
+    {  
+        m_PlaylistQueue = NewQueue;  
+        SavePlaylistToFile();  
+          
+        // 如果更新的是第一首歌且还没开始播放，尝试开始播放  
+        if(Index == 0 && m_CurrentSongIndex == -1 && m_IsPlayingFromQueue)  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "First song ready, starting playback");  
+            PlayNextSong();  
+        }  
+    }  
+}
+
+void CGameContext::CheckSongTransition()    
+{    
+    // 如果没有启用队列播放，直接返回    
+    if(!m_IsPlayingFromQueue || m_PlaylistQueue.empty())    
+        return;    
+        
+    // 如果当前没有播放歌曲，尝试开始播放第一首    
+    if(m_CurrentSongIndex == -1)    
+    {    
+        SongInfo *pFirstSong = GetQueuedSong(0);    
+        if(pFirstSong && pFirstSong->isReady)    
+        {    
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting first song in queue");    
+            PlayNextSong();    
+        }    
+        return;    
+    }    
+        
+    // 检查当前歌曲是否播放完毕    
+    if(m_CurrentSongDuration > 0.0f && m_CurrentSongStartTime > 0)    
+    {    
+        int64_t Now = time_timestamp();    
+        float ElapsedSeconds = (float)(Now - m_CurrentSongStartTime);  // 已修复：去掉除以1000  
+            
+        char aBuf[256];    
+        str_format(aBuf, sizeof(aBuf), "Song progress: %.2f/%.2f seconds", ElapsedSeconds, m_CurrentSongDuration);    
+            
+        // 每30秒打印一次进度（避免日志过多）    
+        static int64_t s_LastProgressPrint = 0;    
+        if(Now - s_LastProgressPrint > 30)  // 修改：30秒而不是30000毫秒  
+        {    
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);    
+            s_LastProgressPrint = Now;    
+        }    
+            
+        // 检查是否需要预加载下一首歌（播放到80%时）    
+        if(ElapsedSeconds >= m_CurrentSongDuration * 0.8f)    
+        {    
+            int NextIndex = m_CurrentSongIndex + 1;    
+            if(NextIndex < (int)m_PlaylistQueue.size())    
+            {    
+                SongInfo *pNextSong = GetQueuedSong(NextIndex);    
+                // 关键修改：添加 !pNextSong->isReady 检查，防止重复预加载  
+                if(pNextSong && !pNextSong->isPreloaded && !pNextSong->isReady)    
+                {    
+                    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for next song (80% progress)");    
+                    StartPreloadingSong(NextIndex);    
+                }    
+            }    
+        }    
+            
+        // 检查当前歌曲是否播放完毕    
+        if(ElapsedSeconds >= m_CurrentSongDuration)    
+        {    
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Current song finished, switching to next");    
+            PlayNextSong();    
+        }    
+    }    
+}
+
+void CGameContext::PlayNextSong()  
+{  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== PlayNextSong called ===");  
+      
+    if(m_PlaylistQueue.empty())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue is empty, stopping playback");  
+        m_IsPlayingFromQueue = false;  
+        m_CurrentSongIndex = -1;  
+        return;  
+    }  
+      
+    // 如果是第一首歌  
+    if(m_CurrentSongIndex == -1)  
+    {  
+        SongInfo *pFirstSong = GetQueuedSong(0);  
+        if(!pFirstSong || !pFirstSong->isReady)  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "First song not ready yet");  
+            return;  
+        }  
+          
+        m_CurrentSongIndex = 0;  
+        m_CurrentSongStartTime = time_timestamp();  
+        m_CurrentSongDuration = pFirstSong->duration;  
+          
+        char aBuf[256];  
+        str_format(aBuf, sizeof(aBuf), "Starting first song: '%s - %s' (%.2f seconds)",   
+                   pFirstSong->title.c_str(), pFirstSong->artist.c_str(), pFirstSong->duration);  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+          
+        // 执行服务器重载开始播放  
+        Console()->ExecuteLine("hot_reload");  
+          
+        // 开始预加载下一首歌  
+        if(m_PlaylistQueue.size() > 1)  
+        {  
+            StartPreloadingSong(1);  
+        }  
+          
+        return;  
+    }  
+      
+    // 切换到下一首歌  
+    int NextIndex = m_CurrentSongIndex + 1;  
+    if(NextIndex >= (int)m_PlaylistQueue.size())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Reached end of queue");  
+        m_IsPlayingFromQueue = false;  
+        m_CurrentSongIndex = -1;  
+        return;  
+    }  
+      
+    SongInfo *pNextSong = GetQueuedSong(NextIndex);  
+    if(!pNextSong || !pNextSong->isReady)  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Next song not ready, waiting...");  
+        return;  
+    }  
+      
+    // 移除已播放完的歌曲  
+    m_PlaylistQueue.pop();  
+      
+    // 更新播放状态  
+    m_CurrentSongIndex = 0;// 因为pop了一首，索引需要调整  
+    m_CurrentSongStartTime = time_timestamp();  
+    m_CurrentSongDuration = pNextSong->duration;  
+      
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "Switching to next song: '%s - %s' (%.2f seconds)",   
+               pNextSong->title.c_str(), pNextSong->artist.c_str(), pNextSong->duration);  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+    SendChatTarget(-1, aBuf);  
+      
+    // 执行服务器重载切换歌曲  
+    Console()->ExecuteLine("hot_reload");  
+      
+    // 开始预加载下下首歌  
+	int NextNextIndex = 1; // 修改：固定为1，因为当前播放的是索引0  
+	if(NextNextIndex < (int)m_PlaylistQueue.size())    
+	{    
+		StartPreloadingSong(NextNextIndex);    
 	}
-	else
-	{
-		m_pGameContext->SendChatTarget(-1, "上传请求失败，使用本地版本重载...");
-		m_pGameContext->Console()->ExecuteLine("hot_reload");
-	}
+		
+    // 更新歌曲变更时间  
+    m_LastSongChangeTime = time_timestamp();  
+}
+
+void CGameContext::RestoreQueuePlaybackState()  
+{  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== Restoring queue playback state ===");  
+      
+    if(m_PlaylistQueue.empty())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "No songs in queue to restore");  
+        return;  
+    }  
+      
+    // 如果之前正在播放队列中的歌曲  
+    if(m_IsPlayingFromQueue && m_CurrentSongIndex >= 0)  
+    {  
+        char aBuf[256];  
+        str_format(aBuf, sizeof(aBuf), "Resuming queue playback from index %d", m_CurrentSongIndex);  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+          
+        // 检查当前歌曲是否还在队列中  
+        SongInfo *pCurrentSong = GetQueuedSong(m_CurrentSongIndex);  
+        if(pCurrentSong)  
+        {  
+            // 重新计算播放时间（服务器重载会重置时间）  
+			m_CurrentSongDuration = pCurrentSong->duration;  
+			
+			// 更新当前歌曲ID用于歌词显示  
+			m_CurrentSongId = pCurrentSong->page_url;
+              
+            char aBuf2[256];  
+            str_format(aBuf2, sizeof(aBuf2), "Resumed playing: '%s - %s'",   
+                       pCurrentSong->title.c_str(), pCurrentSong->artist.c_str());  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf2);  
+        }  
+        else  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Current song index invalid, resetting queue playback");  
+            m_IsPlayingFromQueue = false;  
+            m_CurrentSongIndex = -1;  
+        }  
+    }  
+    else if(!m_PlaylistQueue.empty())  
+    {  
+        // 如果有歌曲但没有在播放，检查是否需要开始播放  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue has songs but not playing, checking if first song is ready");  
+        SongInfo *pFirstSong = GetQueuedSong(0);  
+        if(pFirstSong && pFirstSong->isReady)  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "First song is ready, initializing playback");  
+            InitializeQueuePlayback();  
+        }  
+        else if(pFirstSong && !pFirstSong->isPreloaded)  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "First song not preloaded, starting preload");  
+            StartPreloadingSong(0);  
+        }  
+    }  
+}
+
+void CGameContext::ValidateQueueState()  
+{  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "=== Validating queue state ===");  
+      
+    // 检查队列索引是否有效  
+    if(m_CurrentSongIndex >= (int)m_PlaylistQueue.size())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Current song index out of bounds, resetting");  
+        m_CurrentSongIndex = -1;  
+        m_IsPlayingFromQueue = false;  
+    }  
+      
+    // 检查是否有孤立的预加载状态  
+    if(m_IsPlayingFromQueue && m_PlaylistQueue.empty())  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue is empty but playback is active, resetting");  
+        m_IsPlayingFromQueue = false;  
+        m_CurrentSongIndex = -1;  
+        m_CurrentSongStartTime = 0;  
+        m_CurrentSongDuration = 0.0f;  
+    }  
+      
+    // 检查时长是否合理  
+    if(m_CurrentSongDuration < 0.0f || m_CurrentSongDuration > 3600.0f) // 最长1小时  
+    {  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Invalid song duration detected, resetting");  
+        m_CurrentSongDuration = 0.0f;  
+    }  
+      
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "Queue validation complete - Index: %d, Playing: %s, Queue size: %d",   
+               m_CurrentSongIndex, m_IsPlayingFromQueue ? "true" : "false", (int)m_PlaylistQueue.size());  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+}
+
+void CGameContext::HandlePreloadFailure(int QueueIndex, const char *pReason)  
+{  
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "Preload failed for song at index %d: %s", QueueIndex, pReason);  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+      
+    // 重置该歌曲的预加载状态  
+    SongInfo *pSong = GetQueuedSong(QueueIndex);  
+    if(pSong)  
+    {  
+        pSong->isPreloaded = false;  
+        pSong->isReady = false;  
+          
+        // 如果是当前需要播放的歌曲，尝试重新预加载  
+        if(QueueIndex == m_CurrentSongIndex + 1)  
+        {  
+            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Retrying preload for next song");  
+            StartPreloadingSong(QueueIndex);  
+        }  
+    }  
+      
+    // 通知玩家  
+    str_format(aBuf, sizeof(aBuf), "歌曲预加载失败，将在播放时重试");  
+    SendChatTarget(-1, aBuf);  
+}
+
+void CGameContext::ConQueueStatus(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+      
+    char aBuf[512];  
+    str_format(aBuf, sizeof(aBuf), "Queue Status - Size: %d, Current: %d, Playing: %s, Duration: %.2f",  
+               (int)pSelf->m_PlaylistQueue.size(), pSelf->m_CurrentSongIndex,  
+               pSelf->m_IsPlayingFromQueue ? "true" : "false", pSelf->m_CurrentSongDuration);  
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+      
+    // 验证队列状态  
+    pSelf->ValidateQueueState();  
+}  
+  
+void CGameContext::ConQueueClear(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+      
+    // 清空队列  
+    while(!pSelf->m_PlaylistQueue.empty())  
+        pSelf->m_PlaylistQueue.pop();  
+      
+    // 重置状态  
+    pSelf->m_CurrentSongIndex = -1;  
+    pSelf->m_IsPlayingFromQueue = false;  
+    pSelf->m_CurrentSongStartTime = 0;  
+    pSelf->m_CurrentSongDuration = 0.0f;  
+      
+    // 保存到文件  
+    pSelf->SavePlaylistToFile();  
+      
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue cleared successfully");  
+    pSelf->SendChatTarget(-1, "播放队列已清空");  
+}
+
+void CGameContext::ConQueueSkip(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+      
+    if(!pSelf->m_IsPlayingFromQueue || pSelf->m_PlaylistQueue.empty())  
+    {  
+        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "No song currently playing from queue");  
+        pSelf->SendChatTarget(-1, "当前没有正在播放的队列歌曲");  
+        return;  
+    }  
+      
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Manually skipping current song");  
+    pSelf->SendChatTarget(-1, "管理员跳过了当前歌曲");  
+      
+    // 强制切换到下一首歌  
+    pSelf->PlayNextSong();  
+}  
+  
+void CGameContext::ConQueueRestart(IConsole::IResult *pResult, void *pUserData)  
+{  
+    CGameContext *pSelf = (CGameContext *)pUserData;  
+      
+    if(pSelf->m_PlaylistQueue.empty())  
+    {  
+        pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Queue is empty, cannot restart");  
+        pSelf->SendChatTarget(-1, "播放队列为空，无法重启");  
+        return;  
+    }  
+      
+    // 重置播放状态  
+    pSelf->m_CurrentSongIndex = -1;  
+    pSelf->m_IsPlayingFromQueue = true;  
+    pSelf->m_CurrentSongStartTime = 0;  
+    pSelf->m_CurrentSongDuration = 0.0f;  
+      
+    pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Restarting queue playback");  
+    pSelf->SendChatTarget(-1, "重新开始播放队列");  
+      
+    // 开始播放第一首歌  
+    pSelf->InitializeQueuePlayback();  
+}
+
+void CGameContext::LogQueueState(const char *pContext)  
+{  
+    char aBuf[512];  
+    str_format(aBuf, sizeof(aBuf), "[%s] Queue State - Size: %d, Index: %d, Playing: %s, Duration: %.2f, StartTime: %lld",  
+               pContext, (int)m_PlaylistQueue.size(), m_CurrentSongIndex,  
+               m_IsPlayingFromQueue ? "true" : "false", m_CurrentSongDuration, m_CurrentSongStartTime);  
+    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+      
+    // 显示队列中前3首歌的状态  
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;  
+    int Index = 0;  
+    while(!TempQueue.empty() && Index < 3)  
+    {  
+        const SongInfo &Song = TempQueue.front();  
+        str_format(aBuf, sizeof(aBuf), "  [%d] %s - %s (%.2fs, preloaded:%s, ready:%s)",  
+                   Index, Song.title.c_str(), Song.artist.c_str(), Song.duration,  
+                   Song.isPreloaded ? "Y" : "N", Song.isReady ? "Y" : "N");  
+        Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);  
+        TempQueue.pop();  
+        Index++;  
+    }  
 }

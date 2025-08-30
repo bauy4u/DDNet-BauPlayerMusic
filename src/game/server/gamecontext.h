@@ -5,6 +5,7 @@
 
 #include <engine/console.h>
 #include <engine/server.h>
+#include <set>
 
 #include <game/collision.h>
 #include <game/generated/protocol.h>
@@ -27,11 +28,17 @@
 #include <engine/shared/http.h>  
 #include <engine/external/json-parser/json.h>
 
-struct SongInfo {  
-    std::string title;  
-    std::string artist;  
+struct SongInfo {    
+    std::string title;    
+    std::string artist;    
     std::string page_url;  
-};  
+    float duration;        // 新增：歌曲时长（秒）  
+    bool isPreloaded;      // 新增：是否已预加载  
+    bool isReady;          // 新增：是否准备好播放  
+      
+    // 构造函数  
+    SongInfo() : duration(0.0f), isPreloaded(false), isReady(false) {}  
+};
 
 /*
 	Tick
@@ -109,6 +116,20 @@ class CMapUploadJob : public IJob
 public:  
     CMapUploadJob(CGameContext *pGameContext, std::shared_ptr<CHttpRequest> pRequest);  
     void Run() override;  
+};
+
+class CSongPreloadJob : public IJob      
+{      
+    CGameContext *m_pGameContext;      
+    SongInfo m_Song;  
+    int m_QueueIndex;  
+    IHttp *m_pHttp;  // 新增：直接存储HTTP接口指针  
+          
+public:      
+    CSongPreloadJob(CGameContext *pGameContext, const SongInfo &Song, int QueueIndex, IHttp *pHttp)    
+        : m_pGameContext(pGameContext), m_Song(Song), m_QueueIndex(QueueIndex), m_pHttp(pHttp) {}      
+          
+    void Run() override;      
 };
 
 struct CSnapContext
@@ -319,6 +340,26 @@ public:
 		int m_Tick;        // 游戏tick时间  
 		std::string m_Text; // 歌词文本  
 	};  
+
+	void StartPreloadingSong(int QueueIndex);     // 开始预加载指定位置的歌曲  
+	void CheckSongTransition();                   // 检查是否需要切歌  
+	void PlayNextSong();                          // 播放下一首歌曲  
+	SongInfo* GetQueuedSong(int Index);           // 获取队列中指定位置的歌曲  
+	void InitializeQueuePlayback();               // 初始化队列播放  
+	void UpdateSongInQueue(int Index, float Duration) ; // 更新队列中的歌曲信息
+	void RestoreQueuePlaybackState();                                    // 恢复队列播放状态  
+	void ProcessPreloadedSong(const SongInfo &Song, float Duration, int QueueIndex); // 处理预加载完成的歌曲
+	void ValidateQueueState();                                               // 验证队列状态  
+	void HandlePreloadFailure(int QueueIndex, const char *pReason);       
+	static void ConQueueSkip(IConsole::IResult *pResult, void *pUserData);     // 跳过当前歌曲命令  
+	static void ConQueueRestart(IConsole::IResult *pResult, void *pUserData);  // 重启队列命令  
+	void LogQueueState(const char *pContext);         
+
+	int m_CurrentSongIndex;           // 当前播放歌曲在队列中的索引  
+	int64_t m_CurrentSongStartTime;   // 当前歌曲开始播放的时间戳  
+	float m_CurrentSongDuration;      // 当前歌曲的时长  
+	bool m_IsPlayingFromQueue;        // 是否正在从队列播放  
+	int m_NextPreloadIndex;           // 下一个需要预加载的歌曲索引
 	
 	
 	std::vector<LyricLine> m_CurrentLyrics;  
@@ -598,6 +639,8 @@ private:
 	static void ConGoDown(IConsole::IResult *pResult, void *pUserData);
 	static void ConMove(IConsole::IResult *pResult, void *pUserData);
 	static void ConMoveRaw(IConsole::IResult *pResult, void *pUserData);
+	static void ConQueueStatus(IConsole::IResult *pResult, void *pUserData);  // 队列状态命令  
+	static void ConQueueClear(IConsole::IResult *pResult, void *pUserData);   // 清空队列命令  
 
 	static void ConToTeleporter(IConsole::IResult *pResult, void *pUserData);
 	static void ConToCheckTeleporter(IConsole::IResult *pResult, void *pUserData);
