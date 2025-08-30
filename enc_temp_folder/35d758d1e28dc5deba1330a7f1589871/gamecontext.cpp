@@ -7140,7 +7140,7 @@ void CGameContext::CheckSongTransition()
             s_LastProgressPrint = Now;    
         }    
             
-        // 检查是否需要预加载下一首歌（播放到20%时）    
+        // 检查是否需要预加载下一首歌（播放到80%时）    
 		if(ElapsedSeconds >= m_CurrentSongDuration * 0.2f)    
 		{    
 			int NextIndex = m_CurrentSongIndex + 1;    
@@ -7159,7 +7159,7 @@ void CGameContext::CheckSongTransition()
 						return;  
 					}  
 					
-					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for next song (20% progress)");    
+					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for next song (80% progress)");    
 					StartPreloadingSong(NextIndex);  
 					s_PreloadTriggered[pNextSong->page_url] = true;  
 				}    

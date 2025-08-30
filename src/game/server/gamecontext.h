@@ -274,6 +274,7 @@ class CGameContext : public IGameServer
 	static void ConChatSong(IConsole::IResult *pResult, void *pUserData);  
 	static void ConChatChoose(IConsole::IResult *pResult, void *pUserData);
 	static void ConDownloadSong(IConsole::IResult *pResult, void *pUserData);  // 投票通过后下载歌曲  
+	static void ConChatSkip(IConsole::IResult *pResult, void *pUserData); // 新增  
 	static void ConChatMls(IConsole::IResult *pResult, void *pUserData);       // 显示播放列表  
 
 	void Construct(int Resetting);
