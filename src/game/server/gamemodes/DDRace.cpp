@@ -113,7 +113,7 @@ void CGameControllerDDRace::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 	if(((TileIndex == TILE_BADMINTON_ENABLE) || (TileFIndex == TILE_BADMINTON_ENABLE)) && !pPlayer->m_InBadmintonZone)  
 	{  
 		pPlayer->m_InBadmintonZone = true;  
-		GameServer()->SendChatTarget(ClientId, "进入羽毛球区域！可以使用 /ball, /red, /blue 命令");  
+		GameServer()->SendChatTarget(ClientId, "进入羽毛球区域！使用/ball,/red,/blue加入羽毛球身份组,使用/start [获胜分数]开始游戏,游戏过程中可以/bs查看详情");  
 	}  
 	else if(((TileIndex == TILE_BADMINTON_DISABLE) || (TileFIndex == TILE_BADMINTON_DISABLE)) && pPlayer->m_InBadmintonZone)  
 	{  
@@ -313,4 +313,12 @@ void CGameControllerDDRace::DoTeamChange(class CPlayer *pPlayer, int Team, bool 
 	}
 
 	IGameController::DoTeamChange(pPlayer, Team, DoChatMsg);
+}
+
+void CGameControllerDDRace::RestoreBadmintonStates(SBadmintonGameState **pSavedStates)  
+{  
+    for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+    {  
+        m_aBadmintonGameState[i] = *(pSavedStates[i]);  
+    }  
 }

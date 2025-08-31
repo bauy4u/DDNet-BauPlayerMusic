@@ -75,6 +75,7 @@ class IEngine;
 class IStorage;
 struct CAntibotRoundData;
 struct CScoreRandomMapResult;
+struct SBadmintonGameState;
 class CGameContext;  
 
 class CSongSearchJob : public IJob  
@@ -602,6 +603,7 @@ private:
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;
 	CScore *m_pScore;
+	SBadmintonGameState *m_aSavedBadmintonStates[NUM_DDRACE_TEAMS];  
 
 	// DDRace Console Commands
 

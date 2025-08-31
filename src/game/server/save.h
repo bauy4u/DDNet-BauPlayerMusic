@@ -165,6 +165,10 @@ private:
 	bool m_Invincible;
 	CSaveTee m_SavedTeleTee;
 	std::optional<CSaveTee> m_LastDeath;
+	bool m_InBadmintonZone;  
+    int m_BadmintonRole;  
+    bool m_BadmintonRedScoreValid;  
+    bool m_BadmintonBlueScoreValid;  
 };
 
 class CSaveTeam

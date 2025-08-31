@@ -137,7 +137,12 @@ void CGameContext::Construct(int Resetting)
 	m_CurrentSongDuration = 0.0f;  
 	m_IsPlayingFromQueue = false;  
 	m_NextPreloadIndex = 0;
+    for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+    {  
+        m_aSavedBadmintonStates[i] = new SBadmintonGameState();  
+    } 
 }
+
 
 void CGameContext::Destruct(int Resetting)
 {
@@ -160,6 +165,11 @@ void CGameContext::Destruct(int Resetting)
 		delete m_pScore;
 		m_pScore = nullptr;
 	}
+	for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+    {  
+        delete m_aSavedBadmintonStates[i];  
+        m_aSavedBadmintonStates[i] = nullptr;  
+    }  
 }
 
 CGameContext::CGameContext() :
@@ -199,6 +209,15 @@ void CGameContext::Clear()
     float CurrentSongDuration = m_CurrentSongDuration;  
     bool IsPlayingFromQueue = m_IsPlayingFromQueue;  
     int NextPreloadIndex = m_NextPreloadIndex;  
+	SBadmintonGameState aSavedBadmintonStates[NUM_DDRACE_TEAMS];  
+	if(m_pController)  
+	{  
+		CGameControllerDDRace *pController = (CGameControllerDDRace *)m_pController;  
+		for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+		{  
+			*(m_aSavedBadmintonStates[i]) = pController->m_aBadmintonGameState[i]; 
+		}  
+	}
 
 	m_Resetting = true;
 	this->~CGameContext();
@@ -219,6 +238,14 @@ void CGameContext::Clear()
     m_CurrentSongDuration = CurrentSongDuration;  
     m_IsPlayingFromQueue = IsPlayingFromQueue;  
     m_NextPreloadIndex = NextPreloadIndex; 
+	if(m_pController)  
+	{  
+		CGameControllerDDRace *pController = (CGameControllerDDRace*)m_pController;  
+		for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+		{  
+			pController->m_aBadmintonGameState[i] = *(m_aSavedBadmintonStates[i]);  
+		}  
+	}
 }
 
 void CGameContext::TeeHistorianWrite(const void *pData, int DataSize, void *pUser)
@@ -3356,6 +3383,16 @@ void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 	pSelf->SaveLyricsState();  
+
+	CGameControllerDDRace *pController = (CGameControllerDDRace*)pSelf->m_pController;  
+	if(pSelf->m_pController)
+	{
+		CGameControllerDDRace *pController = (CGameControllerDDRace *)pSelf->m_pController;
+		for(int i = 0; i < NUM_DDRACE_TEAMS; i++)
+		{
+			*(pSelf->m_aSavedBadmintonStates[i]) = pController->m_aBadmintonGameState[i];
+		}
+	} 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
 		if(!pSelf->GetPlayerChar(i))
@@ -3922,7 +3959,7 @@ void CGameContext::RegisterChatCommands()
     Console()->Register("choose", "i[number]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConChatChoose, this, "选择歌曲下载");
 	Console()->Register("mls", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConChatMls, this, "显示播放列表");
 	Console()->Register("skip", "", CFGFLAG_CHAT, ConChatSkip, this, "Vote to skip current song"); // 新增  
-	Console()->Register("ball", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonBall, this, "加入球员身份（羽毛球区域内）");  
+	Console()->Register("ball", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonBall, this, "加入身份（羽毛球区域内）");  
 	Console()->Register("red", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonRed, this, "加入红队（羽毛球区域内）");  
 	Console()->Register("blue", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonBlue, this, "加入蓝队（羽毛球区域内）");  
 	Console()->Register("start", "i[score]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConBadmintonStart, this, "开始羽毛球游戏");
@@ -4195,6 +4232,14 @@ void CGameContext::OnInit(const void *pPersistentData)
 	if(!m_pScore)
 	{
 		m_pScore = new CScore(this, ((CServer *)Server())->DbPool());
+	}
+	if(m_pController)  
+	{  
+		CGameControllerDDRace *pController = (CGameControllerDDRace*)m_pController;  
+		for(int i = 0; i < NUM_DDRACE_TEAMS; i++)  
+		{  
+			pController->m_aBadmintonGameState[i] = *(m_aSavedBadmintonStates[i]);  
+		}  
 	}
 
 	// create all entities from the game layer
@@ -7573,7 +7618,6 @@ void CGameContext::ConBadmintonBall(IConsole::IResult *pResult, void *pUserData)
   
     // 检查队伍状态（必须在有效队伍中）  
     int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
-	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
 	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
 	{  
 		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
@@ -7674,7 +7718,6 @@ void CGameContext::ConBadmintonStart(IConsole::IResult *pResult, void *pUserData
   
     // 检查队伍状态  
     int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
-	int Team = pSelf->GetDDRaceTeam(pResult->m_ClientId);  
 	if(Team < TEAM_FLOCK || (Team == TEAM_FLOCK && g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO) || Team >= TEAM_SUPER)  
 	{  
 		pSelf->SendChatTarget(pResult->m_ClientId, "必须加入队伍才能使用羽毛球功能");  
@@ -7731,7 +7774,7 @@ void CGameContext::ConBadmintonStart(IConsole::IResult *pResult, void *pUserData
     // 检查游戏开始条件  
     if(!HasBall)  
     {  
-        pSelf->SendChatTarget(pResult->m_ClientId, "需要有一个球员才能开始游戏");  
+        pSelf->SendChatTarget(pResult->m_ClientId, "需要有一个球才能开始游戏");  
         return;  
     }  
   
@@ -7816,7 +7859,7 @@ void CGameContext::ConBadmintonStatus(IConsole::IResult *pResult, void *pUserDat
         pSelf->SendChatTarget(pResult->m_ClientId, "游戏未开始");  
     }  
   
-    str_format(aBuf, sizeof(aBuf), "红队:%d人 | 蓝队:%d人 | 球员:%s",   
+    str_format(aBuf, sizeof(aBuf), "红队:%d人 | 蓝队:%d人 | :%s",   
               RedCount, BlueCount, HasBall ? aBallPlayer : "无");  
     pSelf->SendChatTarget(pResult->m_ClientId, aBuf);  
 }

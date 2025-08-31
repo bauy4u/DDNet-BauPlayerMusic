@@ -490,6 +490,10 @@ void CSaveHotReloadTee::Save(CCharacter *pChr, bool AddPenalty)
 	m_Invincible = pChr->m_Core.m_Invincible;
 	m_SavedTeleTee = pChr->GetPlayer()->m_LastTeleTee;
 	m_LastDeath = pChr->GetPlayer()->m_LastDeath;
+	m_InBadmintonZone = pChr->GetPlayer()->m_InBadmintonZone;  
+    m_BadmintonRole = (int)pChr->GetPlayer()->m_BadmintonRole;   
+    m_BadmintonRedScoreValid = pChr->GetPlayer()->m_BadmintonRedScoreValid;  
+    m_BadmintonBlueScoreValid = pChr->GetPlayer()->m_BadmintonBlueScoreValid;   
 }
 
 bool CSaveHotReloadTee::Load(CCharacter *pChr, int Team, bool IsSwap)
@@ -499,6 +503,10 @@ bool CSaveHotReloadTee::Load(CCharacter *pChr, int Team, bool IsSwap)
 	pChr->m_Core.m_Invincible = m_Invincible;
 	pChr->GetPlayer()->m_LastTeleTee = m_SavedTeleTee;
 	pChr->GetPlayer()->m_LastDeath = m_LastDeath;
+	pChr->GetPlayer()->m_InBadmintonZone = m_InBadmintonZone;  
+    pChr->GetPlayer()->m_BadmintonRole = (EBadmintonRole)m_BadmintonRole;
+    pChr->GetPlayer()->m_BadmintonRedScoreValid = m_BadmintonRedScoreValid;  
+    pChr->GetPlayer()->m_BadmintonBlueScoreValid = m_BadmintonBlueScoreValid;  
 
 	return Result;
 }
