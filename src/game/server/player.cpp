@@ -155,6 +155,8 @@ void CPlayer::Reset()
 	m_BadmintonLastBroadcastTick = 0;
 	m_BadmintonRedScoreValid = true;  
 	m_BadmintonBlueScoreValid = true;
+	m_BadmintonRedOutValid = true;  
+	m_BadmintonBlueOutValid = true;
 
 	m_CameraInfo.Reset();
 }

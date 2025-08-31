@@ -595,6 +595,7 @@ public:
 	void ReadCensorList();
 
 	bool PracticeByDefault() const;
+	void SendSkinChangeMessage(int ClientId);
 
 	std::shared_ptr<CScoreRandomMapResult> m_SqlRandomMapResult;
 

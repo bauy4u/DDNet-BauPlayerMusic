@@ -79,6 +79,8 @@ public:
 	int m_BadmintonLastBroadcastTick; 
 	bool m_BadmintonRedScoreValid;   // 红队得分校验变量  
 	bool m_BadmintonBlueScoreValid;  // 蓝队得分校验变量
+	bool m_BadmintonRedOutValid;   // 红队OUT区域校验变量  
+	bool m_BadmintonBlueOutValid;  // 蓝队OUT区域校验变量
 
 	//---------------------------------------------------------
 	// this is used for snapping so we know how we can clip the view for the player

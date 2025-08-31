@@ -37,6 +37,7 @@ public:
 	void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason) override;
 	SBadmintonGameState m_aBadmintonGameState[NUM_DDRACE_TEAMS]; 
     void RestoreBadmintonStates(SBadmintonGameState **pSavedStates);
+    void TeleportPlayerToTeamIn(CCharacter *pChr, int TeamRole); 
 
 	void OnReset() override;
 

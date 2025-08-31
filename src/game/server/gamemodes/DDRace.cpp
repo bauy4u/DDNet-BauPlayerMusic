@@ -123,10 +123,13 @@ void CGameControllerDDRace::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		}  
 		
 		pPlayer->m_InBadmintonZone = false;  
-		pPlayer->m_BadmintonRole = ROLE_NONE;  
+		pPlayer->m_BadmintonRole = ROLE_NONE;
+		pPlayer->m_TeeInfos.m_UseCustomColor = 0;  
+    	GameServer()->SendSkinChangeMessage(ClientId);    
 		GameServer()->SendChatTarget(ClientId, "离开羽毛球区域");  
 	}  
 	
+
 	// 羽毛球得分检测（使用IN/OUT图块）  
 	if(pPlayer->m_InBadmintonZone && pPlayer->m_BadmintonRole == ROLE_BALL)  
 	{  
@@ -202,6 +205,67 @@ void CGameControllerDDRace::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 				{  
 					pPlayer->m_BadmintonBlueScoreValid = true;  
 				}  
+			}  
+		}  
+	}
+	if(pPlayer->m_InBadmintonZone) 
+	{  
+		int Team = GameServer()->GetDDRaceTeam(ClientId);  
+		if(Team >= TEAM_FLOCK && Team < TEAM_SUPER)  
+		{  
+			SBadmintonGameState *pGameState = &m_aBadmintonGameState[Team];  
+
+			
+			// 红队玩家碰到蓝队OUT区域，当校验变量为true时红队失分  
+			if((TileIndex == TILE_BLUE_OUT || TileFIndex == TILE_BLUE_OUT) &&   
+			pPlayer->m_BadmintonRole == ROLE_RED && pPlayer->m_BadmintonBlueOutValid && pGameState->m_GameActive)  
+			{  
+				if(pGameState->m_RedScore > 0)  
+				{  
+					pGameState->m_RedScore--;  
+					char aBuf[256];  
+					str_format(aBuf, sizeof(aBuf), "红队玩家出界！红队失分！当前比分 红队:%d 蓝队:%d",   
+							pGameState->m_RedScore, pGameState->m_BlueScore);  
+					GameServer()->SendChatTeam(Team, aBuf);  
+				}  
+				
+				// 设置校验变量为false  
+				pPlayer->m_BadmintonBlueOutValid = false;  
+				
+				// 传送红队玩家到红队IN处  
+				TeleportPlayerToTeamIn(pChr, ROLE_RED);  
+			}  
+			// 红队玩家碰到红队OUT区域，重置校验变量为true  
+			else if((TileIndex == TILE_RED_OUT || TileFIndex == TILE_RED_OUT) &&   
+					pPlayer->m_BadmintonRole == ROLE_RED && !pPlayer->m_BadmintonRedOutValid)  
+			{  
+				pPlayer->m_BadmintonRedOutValid = true;  
+			}  
+			
+			// 蓝队玩家碰到红队OUT区域，当校验变量为true时蓝队失分  
+			if((TileIndex == TILE_RED_OUT || TileFIndex == TILE_RED_OUT) &&   
+			pPlayer->m_BadmintonRole == ROLE_BLUE && pPlayer->m_BadmintonRedOutValid)  
+			{  
+				if(pGameState->m_BlueScore > 0)  
+				{  
+					pGameState->m_BlueScore--;  
+					char aBuf[256];  
+					str_format(aBuf, sizeof(aBuf), "蓝队玩家出界！蓝队失分！当前比分 红队:%d 蓝队:%d",   
+							pGameState->m_RedScore, pGameState->m_BlueScore);  
+					GameServer()->SendChatTeam(Team, aBuf);  
+				}  
+				
+				// 设置校验变量为false  
+				pPlayer->m_BadmintonRedOutValid = false;  
+				
+				// 传送蓝队玩家到蓝队IN处  
+				TeleportPlayerToTeamIn(pChr, ROLE_BLUE);  
+			}  
+			// 蓝队玩家碰到蓝队OUT区域，重置校验变量为true  
+			else if((TileIndex == TILE_BLUE_OUT || TileFIndex == TILE_BLUE_OUT) &&   
+					pPlayer->m_BadmintonRole == ROLE_BLUE && !pPlayer->m_BadmintonBlueOutValid)  
+			{  
+				pPlayer->m_BadmintonBlueOutValid = true;  
 			}  
 		}  
 	}
@@ -321,4 +385,84 @@ void CGameControllerDDRace::RestoreBadmintonStates(SBadmintonGameState **pSavedS
     {  
         m_aBadmintonGameState[i] = *(pSavedStates[i]);  
     }  
+}
+
+void CGameControllerDDRace::TeleportPlayerToTeamIn(CCharacter *pChr, int TeamRole)    
+{    
+	GameServer()->SendChatTarget(pChr->GetPlayer()->GetCid(), "TeleportPlayerToTeamIn called!");  
+    if(!pChr)    
+    {  
+        GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", "Character is null, aborting teleport");  
+        return;  
+    }  
+        
+    int TargetTile = (TeamRole == ROLE_RED) ? TILE_RED_IN : TILE_BLUE_IN;    
+      
+    // 添加调试输出  
+    char aBuf[256];  
+    str_format(aBuf, sizeof(aBuf), "Starting teleport search for player %s, looking for tile %d (TeamRole=%d)",   
+       GameServer()->Server()->ClientName(pChr->GetPlayer()->GetCid()), TargetTile, TeamRole);  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+      
+    int MapWidth = GameServer()->Collision()->GetWidth();  
+    int MapHeight = GameServer()->Collision()->GetHeight();  
+    str_format(aBuf, sizeof(aBuf), "Map dimensions: %dx%d", MapWidth, MapHeight);  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+      
+    int TilesFound = 0;  
+    int SpecialTilesFound = 0;  
+        
+    for(int y = 0; y < MapHeight; y++)    
+    {    
+        for(int x = 0; x < MapWidth; x++)    
+        {    
+            int Index = GameServer()->Collision()->GetIndex(x, y);    
+            int TileIndex = GameServer()->Collision()->GetTileIndex(Index);    
+            int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(Index);    
+              
+            // 调试：输出找到的特殊图块（非空图块）  
+            if(TileIndex > 0 || TileFIndex > 0) {  
+                SpecialTilesFound++;  
+                if(SpecialTilesFound <= 10) { // 只输出前10个，避免刷屏  
+                    str_format(aBuf, sizeof(aBuf), "Found tile at (%d,%d): Game=%d, Front=%d", x, y, TileIndex, TileFIndex);  
+                    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+                }  
+            }  
+                
+            if(TileIndex == TargetTile || TileFIndex == TargetTile)    
+            {    
+                TilesFound++;  
+                vec2 TelePos = vec2(x * 32.0f + 16.0f, y * 32.0f + 16.0f);  
+                  
+                str_format(aBuf, sizeof(aBuf), "Found target tile %d at position (%d,%d), teleporting to (%.1f,%.1f)",   
+                    TargetTile, x, y, TelePos.x, TelePos.y);  
+                GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+                  
+                pChr->SetPosition(TelePos);    
+                pChr->m_Pos = TelePos;    
+                pChr->m_PrevPos = TelePos;    
+                pChr->SetVelocity(vec2(0, 0));    
+                    
+                // 创建传送效果    
+                GameServer()->CreateDeath(pChr->GetPos(), pChr->GetPlayer()->GetCid(), pChr->TeamMask());    
+                GameServer()->CreateSound(pChr->GetPos(), SOUND_WEAPON_SPAWN, pChr->TeamMask());    
+                  
+                str_format(aBuf, sizeof(aBuf), "Teleport completed successfully to tile %d", TargetTile);  
+                GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+                    
+                return;    
+            }    
+        }    
+    }    
+      
+    // 添加详细的未找到信息  
+    str_format(aBuf, sizeof(aBuf), "Target tile %d NOT FOUND in map! Searched %d total tiles, found %d special tiles",   
+        TargetTile, MapWidth * MapHeight, SpecialTilesFound);  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", aBuf);  
+      
+    // 建议检查的事项  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", "Suggestions:");  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", "1. Check if tile ID 171/172 exists in your map");  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", "2. Verify tile is placed in Game or Front layer, not Tele/Switch layer");  
+    GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "teleport", "3. Confirm TILE_RED_IN and TILE_BLUE_IN constants are correctly defined");  
 }

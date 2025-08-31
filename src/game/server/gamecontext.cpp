@@ -1117,16 +1117,6 @@ void CGameContext::OnTick()
     {  
         CheckAndSendLyrics();  
 		CheckSongTransition() ;
-		if(m_IsPlayingFromQueue && !m_CurrentLyrics.empty() && !m_LyricsActive)  
-		{  
-			static int64_t s_LastLyricsRestart = 0;  
-			int64_t Now = time_timestamp();  
-			if(Now - s_LastLyricsRestart > 5) // 每5秒最多重启一次  
-			{  
-				Console()->ExecuteLine("lyrics_start");  
-				s_LastLyricsRestart = Now;  
-			}  
-		} 
 		 
     }  
 
@@ -4252,7 +4242,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 	RestoreQueuePlaybackState();  
 	if(m_IsPlayingFromQueue)  
 	{  
-		Console()->ExecuteLine("lyrics_start");  
+		Console()->ExecuteLine("lyrics_stop");  
 	}
 }
 
@@ -5980,9 +5970,9 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
       
     // 检查全局冷却（30秒）  
     int64_t Now = time_timestamp();  
-    if(pSelf->m_LastSongChangeTime > 0 && Now - pSelf->m_LastSongChangeTime < 60)  
+    if(pSelf->m_LastSongChangeTime > 0 && Now - pSelf->m_LastSongChangeTime < 10)  
     {  
-        int SecondsLeft = 60 - (int)(Now - pSelf->m_LastSongChangeTime);  
+        int SecondsLeft = 10 - (int)(Now - pSelf->m_LastSongChangeTime);  
         char aBuf[128];  
         str_format(aBuf, sizeof(aBuf), "切歌后需等待 %d 秒才能搜索新歌曲", SecondsLeft);  
         pSelf->SendChatTarget(ClientID, aBuf);  
@@ -6000,7 +5990,7 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
     }  
       
     // 设置60秒个人冷却  
-    pSelf->m_SongCooldowns.SetCooldown(pAddr, 60);   
+    pSelf->m_SongCooldowns.SetCooldown(pAddr, 120);   
       
 
         
@@ -7674,7 +7664,11 @@ void CGameContext::ConBadmintonRed(IConsole::IResult *pResult, void *pUserData)
         return;  
     }  
   
-    pPlayer->m_BadmintonRole = ROLE_RED;  
+    pPlayer->m_BadmintonRole = ROLE_RED; 
+	pPlayer->m_TeeInfos.m_UseCustomColor = 1;  
+	pPlayer->m_TeeInfos.m_ColorBody = 65461;  
+	pPlayer->m_TeeInfos.m_ColorFeet = 65461;
+    pSelf->SendSkinChangeMessage(pResult->m_ClientId);   
     pSelf->SendChatTarget(pResult->m_ClientId, "你加入了红队！");  
 }  
   
@@ -7703,6 +7697,10 @@ void CGameContext::ConBadmintonBlue(IConsole::IResult *pResult, void *pUserData)
     }  
   
     pPlayer->m_BadmintonRole = ROLE_BLUE;  
+	pPlayer->m_TeeInfos.m_UseCustomColor = 1;  
+	pPlayer->m_TeeInfos.m_ColorBody = 10223541;  
+	pPlayer->m_TeeInfos.m_ColorFeet = 10223541; 
+    pSelf->SendSkinChangeMessage(pResult->m_ClientId); 
     pSelf->SendChatTarget(pResult->m_ClientId, "你加入了蓝队！");  
 }
 
@@ -7749,7 +7747,7 @@ void CGameContext::ConBadmintonStart(IConsole::IResult *pResult, void *pUserData
     // 统计队伍内羽毛球区域的玩家  
     int RedCount = 0, BlueCount = 0;  
     bool HasBall = false;  
-	    for(int i = 0; i < MAX_CLIENTS; i++)  
+	for(int i = 0; i < MAX_CLIENTS; i++)  
     {  
         if(!pSelf->m_apPlayers[i] || pSelf->GetDDRaceTeam(i) != Team)  
             continue;  
@@ -7795,6 +7793,31 @@ void CGameContext::ConBadmintonStart(IConsole::IResult *pResult, void *pUserData
     pGameState->m_GameScore = TargetScore;  
     pGameState->m_RedScore = 0;  
     pGameState->m_BlueScore = 0;  
+	for(int i = 0; i < MAX_CLIENTS; i++)  
+    {  
+        if(!pSelf->m_apPlayers[i] || pSelf->GetDDRaceTeam(i) != Team)  
+            continue;  
+          
+        if(pSelf->m_apPlayers[i]->m_InBadmintonZone)  
+        {  
+            CPlayer *pPlayer = pSelf->m_apPlayers[i];  
+            if(pPlayer->m_BadmintonRole == ROLE_RED)  
+            {  
+                pPlayer->m_TeeInfos.m_UseCustomColor = 1;  
+				pPlayer->m_TeeInfos.m_ColorBody = 65461;  
+				pPlayer->m_TeeInfos.m_ColorFeet = 65461;  
+            }  
+            else if(pPlayer->m_BadmintonRole == ROLE_BLUE)  
+            {  
+                pPlayer->m_TeeInfos.m_UseCustomColor = 1;  
+				pPlayer->m_TeeInfos.m_ColorBody = 10223541;  
+				pPlayer->m_TeeInfos.m_ColorFeet = 10223541;
+            }  
+              
+            // 发送皮肤更新消息给所有客户端  
+            pSelf->SendSkinChangeMessage(i);  
+        }  
+    } 
   
     char aBuf[256];  
     str_format(aBuf, sizeof(aBuf), "羽毛球游戏开始！目标分数：%d", TargetScore);  
@@ -7862,4 +7885,22 @@ void CGameContext::ConBadmintonStatus(IConsole::IResult *pResult, void *pUserDat
     str_format(aBuf, sizeof(aBuf), "红队:%d人 | 蓝队:%d人 | :%s",   
               RedCount, BlueCount, HasBall ? aBallPlayer : "无");  
     pSelf->SendChatTarget(pResult->m_ClientId, aBuf);  
+}
+
+void CGameContext::SendSkinChangeMessage(int ClientId)  
+{  
+    CPlayer *pPlayer = m_apPlayers[ClientId];  
+    if(!pPlayer)  
+        return;  
+  
+    // 发送0.7协议的皮肤更新消息  
+    protocol7::CNetMsg_Sv_SkinChange Msg;  
+    Msg.m_ClientId = ClientId;  
+    for(int p = 0; p < protocol7::NUM_SKINPARTS; p++)  
+    {  
+        Msg.m_apSkinPartNames[p] = pPlayer->m_TeeInfos.m_apSkinPartNames[p];  
+        Msg.m_aSkinPartColors[p] = pPlayer->m_TeeInfos.m_aSkinPartColors[p];  
+        Msg.m_aUseCustomColors[p] = pPlayer->m_TeeInfos.m_aUseCustomColors[p];  
+    }  
+    Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);  
 }
