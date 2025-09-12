@@ -5990,7 +5990,7 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
     }  
       
     // 设置60秒个人冷却  
-    pSelf->m_SongCooldowns.SetCooldown(pAddr, 120);   
+    pSelf->m_SongCooldowns.SetCooldown(pAddr, 1);   
       
 
         
@@ -7167,44 +7167,25 @@ void CGameContext::CheckSongTransition()
     if(m_CurrentSongDuration > 0.0f && m_CurrentSongStartTime > 0)    
     {    
         int64_t Now = time_timestamp();    
-        float ElapsedSeconds = (float)(Now - m_CurrentSongStartTime);  // 已修复：去掉除以1000  
-            
-        char aBuf[256];    
-        str_format(aBuf, sizeof(aBuf), "Song progress: %.2f/%.2f seconds", ElapsedSeconds, m_CurrentSongDuration);    
-            
-        // 每30秒打印一次进度（避免日志过多）    
-        static int64_t s_LastProgressPrint = 0;    
-        if(Now - s_LastProgressPrint > 30)  // 修改：30秒而不是30000毫秒  
-        {    
-            Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);    
-            s_LastProgressPrint = Now;    
-        }    
+        float ElapsedSeconds = (float)(Now - m_CurrentSongStartTime);
             
         // 检查是否需要预加载下一首歌（播放到20%时）    
-		if(ElapsedSeconds >= m_CurrentSongDuration * 0.2f)    
-		{    
-			int NextIndex = m_CurrentSongIndex + 1;    
-			if(NextIndex < (int)m_PlaylistQueue.size())    
-			{    
-				SongInfo *pNextSong = GetQueuedSong(NextIndex);    
-				// 使用歌曲特定的一次性标记  
-				static std::map<std::string, bool> s_PreloadTriggered;  
-				
-				if(pNextSong && !pNextSong->isPreloaded && !pNextSong->isReady)    
-				{  
-					// 检查这首歌是否已经触发过预加载  
-					if(s_PreloadTriggered[pNextSong->page_url])  
-					{  
-						// 已经触发过，不再输出日志  
-						return;  
-					}  
-					
-					Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for next song (20% progress)");    
-					StartPreloadingSong(NextIndex);  
-					s_PreloadTriggered[pNextSong->page_url] = true;  
-				}    
-			}    
-		}   
+        if(ElapsedSeconds >= m_CurrentSongDuration * 0.2f)    
+        {    
+            int NextIndex = m_CurrentSongIndex + 1;    
+            if(NextIndex < (int)m_PlaylistQueue.size())    
+            {    
+                SongInfo *pNextSong = GetQueuedSong(NextIndex);    
+                
+                // 修正：只检查 isPreloaded 状态。
+                // 如果预加载失败，isPreloaded 会被重置为 false，这里就能自动重试。
+                if(pNextSong && !pNextSong->isPreloaded)    
+                {  
+                    Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Starting preload for next song (20% progress)");    
+                    StartPreloadingSong(NextIndex);  
+                }    
+            }    
+        }   
             
         // 检查当前歌曲是否播放完毕    
         if(ElapsedSeconds >= m_CurrentSongDuration)    
