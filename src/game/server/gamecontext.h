@@ -354,6 +354,7 @@ public:
 	SongInfo* GetQueuedSong(int Index);           // 获取队列中指定位置的歌曲  
 	void InitializeQueuePlayback();               // 初始化队列播放  
 	void UpdateSongInQueue(int Index, float Duration) ; // 更新队列中的歌曲信息
+	void UpdateSongPreloadedStatusInQueue(int Index, bool IsPreloaded);
 	void RestoreQueuePlaybackState();                                    // 恢复队列播放状态  
 	void ProcessPreloadedSong(const SongInfo &Song, float Duration, int QueueIndex); // 处理预加载完成的歌曲
 	void ValidateQueueState();                                               // 验证队列状态  

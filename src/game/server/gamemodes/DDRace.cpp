@@ -11,8 +11,8 @@
 #include <game/server/score.h>
 #include <game/version.h>
 
-#define GAME_TYPE_NAME "DDraceNetwork"
-#define TEST_TYPE_NAME "SPlayer DM"
+#define GAME_TYPE_NAME "BPMusic DM"
+#define TEST_TYPE_NAME "BPMusic DM"
 
 CGameControllerDDRace::CGameControllerDDRace(class CGameContext *pGameServer) :
 	IGameController(pGameServer)

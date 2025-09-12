@@ -4215,6 +4215,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 			}
 			m_TeeHistorian.RecordAuthInitial(i, Level, Server()->GetAuthName(i));
 		}
+		
 	}
 
 	Server()->DemoRecorder_HandleAutoStart();
@@ -4239,11 +4240,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 	m_pAntibot->RoundStart(this);
 	LoadPlaylistFromFile();  
 	LoadLyricsState();  
-	RestoreQueuePlaybackState();  
-	if(m_IsPlayingFromQueue)  
-	{  
-		Console()->ExecuteLine("lyrics_stop");  
-	}
+	RestoreQueuePlaybackState();
 }
 
 void CGameContext::CreateAllEntities(bool Initial)
@@ -6929,7 +6926,7 @@ void CGameContext::StartPreloadingSong(int QueueIndex)
     Engine()->AddJob(pJob);    
         
     // 标记为预加载中    
-    pSong->isPreloaded = true;    
+    UpdateSongPreloadedStatusInQueue(QueueIndex, true);    
 }
 
 void CSongPreloadJob::Run()  
@@ -7056,17 +7053,6 @@ void CGameContext::ProcessPreloadedSong(const SongInfo &Song, float Duration, in
       
     if(ModifyMapWithAudio(aOriginMapPath, aTargetMapPath, SongId.c_str(), pAudioData, AudioDataSize, true))  
     {  
-        // 加载歌词  
-        LoadLyrics(SongId);  
-		if(QueueIndex == m_CurrentSongIndex && m_IsPlayingFromQueue)  
-		{  
-			m_CurrentSongId = SongId;  
-			if(!m_CurrentLyrics.empty())  
-			{  
-				StartLyrics();  
-			}  
-		}
-          
         // 更新队列中的歌曲信息  
         UpdateSongInQueue(QueueIndex, Duration);  
           
@@ -7078,6 +7064,13 @@ void CGameContext::ProcessPreloadedSong(const SongInfo &Song, float Duration, in
             m_CurrentSongStartTime = time_timestamp();  
             m_CurrentSongDuration = Duration;  
             m_IsPlayingFromQueue = true;  
+
+            m_CurrentSongId = SongId;
+            LoadLyrics(m_CurrentSongId);
+            if(!m_CurrentLyrics.empty())
+            {
+                StartLyrics();
+            }
               
             // 执行服务器重载开始播放第一首歌  
             Console()->ExecuteLine("hot_reload");  
@@ -7143,6 +7136,37 @@ void CGameContext::UpdateSongInQueue(int Index, float Duration)
             PlayNextSong();  
         }  
     }  
+}
+
+void CGameContext::UpdateSongPreloadedStatusInQueue(int Index, bool IsPreloaded)
+{
+    if(Index < 0 || Index >= (int)m_PlaylistQueue.size())
+        return;
+
+    std::queue<SongInfo> NewQueue;
+    std::queue<SongInfo> TempQueue = m_PlaylistQueue;
+    int CurrentIndex = 0;
+
+    while(!TempQueue.empty())
+    {
+        SongInfo Song = TempQueue.front();
+        TempQueue.pop();
+
+        if(CurrentIndex == Index)
+        {
+            Song.isPreloaded = IsPreloaded;
+            if(!IsPreloaded)
+            {
+                Song.isReady = false;
+            }
+        }
+
+        NewQueue.push(Song);
+        CurrentIndex++;
+    }
+
+    m_PlaylistQueue = NewQueue;
+    SavePlaylistToFile();
 }
 
 void CGameContext::CheckSongTransition()    
@@ -7326,7 +7350,6 @@ void CGameContext::RestoreQueuePlaybackState()
 			
 			// 重要：更新当前歌曲ID并重新加载歌词  
 			m_CurrentSongId = pCurrentSong->page_url;  
-			LoadLyrics(m_CurrentSongId);  
 			
 			// 如果有歌词且之前是激活状态，重新启动  
 			if(!m_CurrentLyrics.empty() && m_LyricsActive)  
@@ -7409,8 +7432,7 @@ void CGameContext::HandlePreloadFailure(int QueueIndex, const char *pReason)
     SongInfo *pSong = GetQueuedSong(QueueIndex);  
     if(pSong)  
     {  
-        pSong->isPreloaded = false;  
-        pSong->isReady = false;  
+        UpdateSongPreloadedStatusInQueue(QueueIndex, false);  
           
         // 如果是当前需要播放的歌曲，尝试重新预加载  
         if(QueueIndex == m_CurrentSongIndex + 1)  
