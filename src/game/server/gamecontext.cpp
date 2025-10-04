@@ -1086,6 +1086,17 @@ void CGameContext::OnPreTickTeehistorian()
 
 void CGameContext::OnTick()
 {
+    // handle song start time after reload
+    if(m_IsPlayingFromQueue && m_CurrentSongStartTime == 0)
+    {
+        m_CurrentSongStartTime = time_timestamp();
+        // re-start lyrics to calculate tick with the correct start time
+        if(m_LyricsActive)
+        {
+            StartLyrics();
+        }
+    }
+
 	// check tuning
 	CheckPureTuning();
 
@@ -5987,7 +5998,7 @@ void CGameContext::ConChatSong(IConsole::IResult *pResult, void *pUserData)
     }  
       
     // 设置60秒个人冷却  
-    pSelf->m_SongCooldowns.SetCooldown(pAddr, 1);   
+    pSelf->m_SongCooldowns.SetCooldown(pAddr, 100);   
       
 
         
@@ -7289,7 +7300,7 @@ void CGameContext::PlayNextSong()
 	
 	// 更新播放状态  
 	m_CurrentSongIndex = 0;  
-	m_CurrentSongStartTime = time_timestamp();    
+	m_CurrentSongStartTime = 0;  // Signal for a fresh start after reload    
 	m_CurrentSongDuration = pNextSong->duration;
       
     // 更新播放状态  
