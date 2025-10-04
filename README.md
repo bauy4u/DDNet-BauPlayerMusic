@@ -105,6 +105,12 @@ Content-Type: application/json
 
 ## 游戏内使用
 
+在服务器内使用前，确保已使用
+```
+http_allow_insecure 1
+```
+开启http通信
+ 
 ### 玩家命令
 
 - `/song <歌名>` - 搜索歌曲
