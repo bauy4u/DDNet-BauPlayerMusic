@@ -14,7 +14,7 @@
 
 ### 环境要求
 
-- Python 3.x
+- Python 3.11.9
 - FFmpeg (用于音频转换)
 - Chrome 浏览器 (用于首次登录)
 
